@@ -41,6 +41,35 @@ jobs:
         shell: pwsh
         run: swift test -v
 
+      # Packaging is validated on PRs before merge, but no PR artifact is published.
+      # The installer script itself verifies required Swift runtime DLLs and runs a clean-PATH smoke test.
+      - name: Validate Windows installer packaging
+        if: github.event_name == 'pull_request'
+        shell: pwsh
+        run: |
+          $source = Get-Content "Sources/PokeTokenBar/WindowsUpdate.swift" -Raw
+          if ($source -notmatch 'static let currentVersion = "([0-9]+\.[0-9]+\.[0-9]+)"') {
+            throw "Could not read WindowsUpdate.currentVersion"
+          }
+          $baseVersion = $Matches[1]
+
+          $candidates = @(
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup --no-progress -y
+          }
+
+          ./scripts/build-win-installer.ps1 -Version $baseVersion -OutDir "dist-pr-check"
+          $installer = Join-Path $PWD "dist-pr-check\PokeTokenBar-Setup-$baseVersion.exe"
+          if (-not (Test-Path $installer)) {
+            throw "Installer validation did not produce: $installer"
+          }
+          Write-Host "Installer packaging validation passed: $installer"
+
   # Publish only after the Windows build/tests pass on the canonical windows-port branch.
   # Keeping publication out of the PR job means PR code never receives Actions write permission.
   publish-windows-artifact:
