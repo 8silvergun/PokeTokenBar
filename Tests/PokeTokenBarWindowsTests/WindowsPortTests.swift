@@ -49,5 +49,37 @@ final class WindowsPortTests: XCTestCase {
         XCTAssertFalse(WindowsUpdate.isNewer("2.4.4", than: "2.4.4.1"))   // .0 is older than .1
         XCTAssertFalse(WindowsUpdate.isNewer("2.4.4.1", than: "2.4.4.1"))
     }
+
+    func testWindowsUpdateRepositoryIsForkOwned() {
+        XCTAssertEqual(WindowsUpdate.repo, "8silvergun/PokeTokenBar")
+    }
+
+    func testUpdaterScriptDetectionOnlyMatchesDetachedUpdater() {
+        let path = "C:\\Users\\me\\AppData\\Local\\Temp\\ptb-apply-123.cmd"
+        let command = "\"C:\\Windows\\System32\\cmd.exe\" /c \"\(path)\""
+        XCTAssertEqual(WindowsProcess.updaterScriptPath(in: command), path)
+        XCTAssertNil(WindowsProcess.updaterScriptPath(in: "\"C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd\" app-server"))
+    }
+
+    func testPersistentLogRedactsCommonCredentialShapes() {
+        let bearer = "Authorization: Bearer super-secret-token-value"
+        let json = "{\"access_token\":\"another-secret-token-value\"}"
+        let apiKey = "sk-abcdefghijklmnopqrstuvwxyz012345"
+        for input in [bearer, json, apiKey] {
+            let output = AppLog.redacted(input)
+            XCTAssertTrue(output.contains("[REDACTED]"), "expected redaction: \(output)")
+            XCTAssertFalse(output.contains("super-secret-token-value"))
+            XCTAssertFalse(output.contains("another-secret-token-value"))
+            XCTAssertFalse(output.contains("abcdefghijklmnopqrstuvwxyz012345"))
+        }
+    }
+
+    func testWindowsImageDecoderResourceLimits() {
+        XCTAssertTrue(WindowsImaging.dimensionsAreSafe(width: 128, height: 128))
+        XCTAssertTrue(WindowsImaging.dimensionsAreSafe(width: 4096, height: 4096))
+        XCTAssertFalse(WindowsImaging.dimensionsAreSafe(width: 4097, height: 1))
+        XCTAssertFalse(WindowsImaging.dimensionsAreSafe(width: 1, height: 4097))
+        XCTAssertFalse(WindowsImaging.dimensionsAreSafe(width: 0, height: 128))
+    }
 }
 #endif
