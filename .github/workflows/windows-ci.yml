@@ -6,11 +6,8 @@ on:
   pull_request:
     branches: [windows-port]
 
-# contents:read is enough for checkout. actions:write is used only by the final
-# push-only cleanup step to delete older Windows build artifacts.
 permissions:
   contents: read
-  actions: write
 
 concurrency:
   group: windows-ci-${{ github.ref }}
@@ -20,6 +17,8 @@ jobs:
   windows-build-test:
     name: windows-build-test
     runs-on: windows-2025
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -33,6 +32,34 @@ jobs:
       - name: Show Swift version
         shell: pwsh
         run: swift --version
+
+      - name: Build release binary
+        shell: pwsh
+        run: swift build -c release -v
+
+      - name: Run Windows tests
+        shell: pwsh
+        run: swift test -v
+
+  # Publish only after the Windows build/tests pass on the canonical windows-port branch.
+  # Keeping publication out of the PR job means PR code never receives Actions write permission.
+  publish-windows-artifact:
+    name: publish-windows-artifact
+    if: github.event_name == 'push' && github.ref == 'refs/heads/windows-port'
+    needs: windows-build-test
+    runs-on: windows-2025
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Install Swift 6.3.3
+        uses: SwiftyLab/setup-swift@38f54a76b70d989321de9dc7c840618c08cf56e9 # v1.14.0
+        with:
+          swift-version: '6.3.3'
 
       - name: Read Windows package version
         id: version
@@ -52,12 +79,7 @@ jobs:
         shell: pwsh
         run: swift build -c release -v
 
-      - name: Run Windows tests
-        shell: pwsh
-        run: swift test -v
-
       - name: Prepare versioned Windows executable
-        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/windows-port'
         shell: pwsh
         run: |
           $package = "${{ steps.version.outputs.package_version }}"
@@ -74,7 +96,6 @@ jobs:
           Copy-Item $exe (Join-Path $dist "PokeTokenBar-$package-x64.exe") -Force
 
       - name: Upload latest Windows executable
-        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/windows-port'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: PokeTokenBar-${{ steps.version.outputs.package_version }}-x64
@@ -83,7 +104,6 @@ jobs:
           retention-days: 30
 
       - name: Keep only the latest Windows artifact
-        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/windows-port'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
