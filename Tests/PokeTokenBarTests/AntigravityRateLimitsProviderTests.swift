@@ -53,6 +53,20 @@ final class AntigravityRateLimitsProviderTests: XCTestCase {
     }
     """
 
+    func testTrustedQuotaEndpointRejectsCredentialExfiltrationTargets() throws {
+        let trusted = try XCTUnwrap(AntigravityRateLimitsProvider.trustedQuotaEndpoint(
+            from: "https://cloudcode-pa.googleapis.com"))
+        XCTAssertEqual(trusted.scheme, "https")
+        XCTAssertEqual(trusted.host, "cloudcode-pa.googleapis.com")
+        XCTAssertTrue(trusted.path.hasSuffix("/v1internal:retrieveUserQuotaSummary"))
+
+        XCTAssertNil(AntigravityRateLimitsProvider.trustedQuotaEndpoint(from: "http://cloudcode-pa.googleapis.com"))
+        XCTAssertNil(AntigravityRateLimitsProvider.trustedQuotaEndpoint(from: "https://attacker.example"))
+        XCTAssertNil(AntigravityRateLimitsProvider.trustedQuotaEndpoint(from: "https://googleapis.com.attacker.example"))
+        XCTAssertNil(AntigravityRateLimitsProvider.trustedQuotaEndpoint(from: "https://user:pass@cloudcode-pa.googleapis.com"))
+        XCTAssertNil(AntigravityRateLimitsProvider.trustedQuotaEndpoint(from: "https://cloudcode-pa.googleapis.com:8443"))
+    }
+
     func testDecodingQuotaSummary() throws {
         let data = Data(sampleJSON.utf8)
         let status = try JSONDecoder().decode(AntigravityRateLimitStatus.self, from: data)
