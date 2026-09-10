@@ -93,7 +93,7 @@ final class WindowsProcess {
 
     /// Extract only our own detached updater script from a command line. Other `.cmd` processes (for
     /// example npm-installed codex.cmd) are intentionally unaffected by the signature gate.
-    private static func updaterScriptPath(in commandLine: String) -> String? {
+    static func updaterScriptPath(in commandLine: String) -> String? {
         let pattern = #"(?i)\"([^\"]*ptb-apply-[0-9]+\.cmd)\""#
         guard let regex = try? NSRegularExpression(pattern: pattern),
               let match = regex.firstMatch(in: commandLine, range: NSRange(commandLine.startIndex..., in: commandLine)),
@@ -131,13 +131,14 @@ final class WindowsProcess {
         let expected = WindowsUpdate.trustedInstallerSignerThumbprint
             .replacingOccurrences(of: " ", with: "")
             .uppercased()
-        guard expected.count == 40,
-              expected.unicodeScalars.allSatisfy({ (48...57).contains($0.value) || (65...70).contains($0.value) }) else {
+        guard expected.range(of: #"^[0-9A-F]{40}$"#, options: .regularExpression) != nil else {
             return false
         }
 
         var sysDir = [WCHAR](repeating: 0, count: 32_768)
-        let n = GetSystemDirectoryW(&sysDir, UINT(sysDir.count))
+        let n: UINT = sysDir.withUnsafeMutableBufferPointer { buffer in
+            GetSystemDirectoryW(buffer.baseAddress, UINT(buffer.count))
+        }
         guard n > 0, Int(n) < sysDir.count else { return false }
         let system32 = String(decoding: sysDir.prefix(Int(n)), as: UTF16.self)
         let powershell = system32 + "\\WindowsPowerShell\\v1.0\\powershell.exe"
