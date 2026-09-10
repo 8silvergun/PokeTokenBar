@@ -5,11 +5,25 @@ import WinSDK
 /// PNG bytes → Win32 `HICON`, using WIC (Windows Imaging Component, COM) to decode and GDI to
 /// build the icon. Shared by the tray icon (Task-3 #1) and, later, the popover sprite views.
 enum WindowsImaging {
+    /// Decoder resource limits. Remote sprite bytes are untrusted input; dimensions/frame counts are
+    /// checked before allocating BGRA canvases so a tiny compressed image cannot trigger huge memory use.
+    static let maxEncodedBytes = 8 * 1024 * 1024
+    static let maxDimension = 4096
+    static let maxPixels = 16_777_216       // 4096 × 4096
+    static let maxGIFFrames: UINT = 120
+
+    static func dimensionsAreSafe(width: Int, height: Int) -> Bool {
+        guard width > 0, height > 0,
+              width <= maxDimension, height <= maxDimension else { return false }
+        return width <= maxPixels / height
+    }
+
     /// Decode a PNG and build an HICON. The PokéAPI sprites carry a lot of transparent padding, so
     /// the content is trimmed and re-centered into a square (fills more of the fixed-size tray slot →
     /// the sprite reads bigger). Caller owns the HICON (DestroyIcon).
     static func hicon(fromPNG data: Data) -> HICON? {
-        guard let img = decodePNG(data) else { return nil }
+        guard !data.isEmpty, data.count <= maxEncodedBytes,
+              let img = decodePNG(data) else { return nil }
         let t = trimmedSquare(img)
         return makeHICON(width: t.width, height: t.height, bgra: t.bgra)
     }
@@ -37,6 +51,9 @@ enum WindowsImaging {
                                    marginFrac: Double = 0.10) -> DecodedImage {
         let bw = box.maxX - box.minX + 1, bh = box.maxY - box.minY + 1
         let side = max(bw, bh) + Int((Double(max(bw, bh)) * marginFrac).rounded()) * 2
+        guard dimensionsAreSafe(width: side, height: side) else {
+            return DecodedImage(width: w, height: h, bgra: bgra)
+        }
         var out = [UInt8](repeating: 0, count: side * side * 4)
         let offX = (side - bw) / 2, offY = (side - bh) / 2
         for y in 0..<bh {
@@ -59,6 +76,7 @@ enum WindowsImaging {
     /// previous pixels under transparent ones). Returns >1 icons, or nil (not animated / failure).
     /// Caller destroys the HICONs.
     static func hiconsFromGIF(_ data: Data) -> [HICON]? {
+        guard !data.isEmpty, data.count <= maxEncodedBytes else { return nil }
         _ = CoInitializeEx(nil, DWORD(COINIT_APARTMENTTHREADED.rawValue))
         var clsid = CLSID_WICImagingFactory
         var iid = IID_IWICImagingFactory
@@ -83,7 +101,8 @@ enum WindowsImaging {
         defer { _ = decoder.pointee.lpVtbl.pointee.Release(decoder) }
 
         var count: UINT = 0
-        guard decoder.pointee.lpVtbl.pointee.GetFrameCount(decoder, &count) >= 0, count > 1 else { return nil }
+        guard decoder.pointee.lpVtbl.pointee.GetFrameCount(decoder, &count) >= 0,
+              count > 1, count <= maxGIFFrames else { return nil }
 
         // GIF frames are partial sub-images placed at (Left,Top) on a logical screen, with a disposal
         // rule per frame. Composite them properly onto a persistent canvas, honoring offset + disposal
@@ -94,11 +113,12 @@ enum WindowsImaging {
         guard let f0 = decodeFrame(factory, decoder, 0) else { return nil }
         let lw = metaInt(globalReader, "/logscrdesc/Width") ?? f0.width
         let lh = metaInt(globalReader, "/logscrdesc/Height") ?? f0.height
-        guard lw > 0, lh > 0 else { return nil }
+        guard dimensionsAreSafe(width: lw, height: lh) else { return nil }
 
         var canvas = [UInt8](repeating: 0, count: lw * lh * 4)
         var saved: [UInt8]?
         var composited: [[UInt8]] = []   // one full lw×lh canvas per frame (trimmed together below)
+        composited.reserveCapacity(Int(count))
         for i in 0..<Int(count) {
             var frame: UnsafeMutablePointer<IWICBitmapFrameDecode>?
             guard decoder.pointee.lpVtbl.pointee.GetFrame(decoder, UINT(i), &frame) >= 0, let frame else { continue }
@@ -184,16 +204,19 @@ enum WindowsImaging {
             converter, src, &pf, WICBitmapDitherTypeNone, nil, 0.0, WICBitmapPaletteTypeCustom) >= 0 else { return nil }
         var fw: UINT = 0, fh: UINT = 0
         guard converter.pointee.lpVtbl.pointee.GetSize(converter, &fw, &fh) >= 0, fw > 0, fh > 0 else { return nil }
-        let stride = Int(fw) * 4
-        var buffer = [UInt8](repeating: 0, count: stride * Int(fh))
+        let width = Int(fw), height = Int(fh)
+        guard dimensionsAreSafe(width: width, height: height) else { return nil }
+        let stride = width * 4
+        var buffer = [UInt8](repeating: 0, count: stride * height)
         guard buffer.withUnsafeMutableBufferPointer({ buf in
             converter.pointee.lpVtbl.pointee.CopyPixels(converter, nil, UINT(stride), UINT(buf.count), buf.baseAddress)
         }) >= 0 else { return nil }
-        return DecodedImage(width: Int(fw), height: Int(fh), bgra: buffer)
+        return DecodedImage(width: width, height: height, bgra: buffer)
     }
 
     /// Decode PNG → 32bpp straight-alpha BGRA pixels via WIC.
     static func decodePNG(_ data: Data) -> DecodedImage? {
+        guard !data.isEmpty, data.count <= maxEncodedBytes else { return nil }
         _ = CoInitializeEx(nil, DWORD(COINIT_APARTMENTTHREADED.rawValue))
 
         var clsid = CLSID_WICImagingFactory
@@ -238,6 +261,7 @@ enum WindowsImaging {
         var w: UINT = 0, h: UINT = 0
         guard converter.pointee.lpVtbl.pointee.GetSize(converter, &w, &h) >= 0, w > 0, h > 0 else { return nil }
         let width = Int(w), height = Int(h)
+        guard dimensionsAreSafe(width: width, height: height) else { return nil }
         let stride = width * 4
         var buffer = [UInt8](repeating: 0, count: stride * height)
         let copyHR = buffer.withUnsafeMutableBufferPointer { buf in
@@ -250,6 +274,7 @@ enum WindowsImaging {
 
     /// Build a 32bpp alpha HICON from BGRA pixels via a top-down DIB + zeroed mask.
     static func makeHICON(width: Int, height: Int, bgra: [UInt8]) -> HICON? {
+        guard dimensionsAreSafe(width: width, height: height), bgra.count >= width * height * 4 else { return nil }
         var bmi = BITMAPINFO()
         bmi.bmiHeader.biSize = DWORD(MemoryLayout<BITMAPINFOHEADER>.size)
         bmi.bmiHeader.biWidth = LONG(width)
