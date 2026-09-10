@@ -37,71 +37,95 @@ if ($baked -ne $Version) {
   throw "Release exe is v$baked but you asked for v$Version. Run 'swift build -c release' after bumping WindowsUpdate.currentVersion, then retry."
 }
 
-# Discover runtime DLLs from the ACTIVE Swift installation instead of assuming the Windows installer
-# layout under %LOCALAPPDATA%. This supports both the official local installer and GitHub Actions
-# toolchains installed under C:\hostedtoolcache by setup-swift.
+# setup-swift adds the active toolchain, runtime and ICU usr/bin directories to PATH. Prefer those
+# active directories instead of guessing a particular local/hosted installation layout.
 $swiftExe = (Get-Command swift.exe -ErrorAction Stop).Source
 $toolchainBin = Split-Path $swiftExe -Parent
-$runtimeDirs = New-Object System.Collections.Generic.List[string]
+$candidateDirs = New-Object System.Collections.Generic.List[string]
 
-function Add-RuntimeDir([string]$Path) {
-  if ($Path -and (Test-Path $Path) -and -not $runtimeDirs.Contains($Path)) {
-    $runtimeDirs.Add($Path)
+function Add-CandidateDir([string]$Path) {
+  if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return }
+  $resolved = (Resolve-Path -LiteralPath $Path -ErrorAction SilentlyContinue).Path
+  if ($resolved -and -not $candidateDirs.Contains($resolved)) {
+    $candidateDirs.Add($resolved)
   }
 }
 
-# The active toolchain bin is cheap to check and may itself contain redistributable DLLs.
-Add-RuntimeDir $toolchainBin
+Add-CandidateDir $toolchainBin
 
-# If the active swift.exe lives below a Toolchains directory, its installation root is the path
-# immediately before \Toolchains\. Both the local Swift installer and setup-swift use this shape.
-$swiftInstallRoot = $null
-$marker = "\Toolchains\"
-$markerIndex = $swiftExe.IndexOf($marker, [StringComparison]::OrdinalIgnoreCase)
-if ($markerIndex -ge 0) {
-  $swiftInstallRoot = $swiftExe.Substring(0, $markerIndex)
+# Discover runtime/toolchain/ICU directories exported by the active Swift setup. Restrict candidates
+# to directories that actually contain known Swift runtime components so unrelated PATH DLLs are not
+# bundled into the application.
+$pathDirs = @($env:PATH -split [Regex]::Escape([string][System.IO.Path]::PathSeparator)) |
+  Where-Object { $_ } |
+  Select-Object -Unique
+foreach ($dir in $pathDirs) {
+  if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
+  $hasKnownRuntime =
+    (Test-Path -LiteralPath (Join-Path $dir "FoundationNetworking.dll")) -or
+    (Test-Path -LiteralPath (Join-Path $dir "Foundation.dll")) -or
+    (Test-Path -LiteralPath (Join-Path $dir "swiftCore.dll")) -or
+    (Test-Path -LiteralPath (Join-Path $dir "BlocksRuntime.dll")) -or
+    (Test-Path -LiteralPath (Join-Path $dir "dispatch.dll")) -or
+    (@(Get-ChildItem -LiteralPath $dir -Filter "icu*.dll" -File -ErrorAction SilentlyContinue).Count -gt 0)
+  if ($hasKnownRuntime) {
+    Add-CandidateDir $dir
+  }
 }
 
-# Prefer explicit Runtime directories when they exist.
+# Also support the official local Swift installer layout even when its Runtime/bin is not currently
+# present in PATH.
 $localRuntimeRoot = Join-Path $env:LOCALAPPDATA "Programs\Swift\Runtimes"
-if (Test-Path $localRuntimeRoot) {
-  Get-ChildItem $localRuntimeRoot -Directory -ErrorAction SilentlyContinue |
+if (Test-Path -LiteralPath $localRuntimeRoot) {
+  Get-ChildItem -LiteralPath $localRuntimeRoot -Directory -ErrorAction SilentlyContinue |
     Sort-Object Name -Descending |
-    ForEach-Object { Add-RuntimeDir (Join-Path $_.FullName "usr\bin") }
+    ForEach-Object { Add-CandidateDir (Join-Path $_.FullName "usr\bin") }
 }
 
-if ($swiftInstallRoot) {
-  $runtimeRoot = Join-Path $swiftInstallRoot "Runtimes"
-  if (Test-Path $runtimeRoot) {
-    Get-ChildItem $runtimeRoot -Directory -ErrorAction SilentlyContinue |
-      Sort-Object Name -Descending |
-      ForEach-Object { Add-RuntimeDir (Join-Path $_.FullName "usr\bin") }
-  }
-}
-
-# Find the directory containing FoundationNetworking.dll. If no direct candidate has it, do one
-# bounded fallback search inside the active Swift installation root. The exact layout differs between
-# local Swift installers and hosted CI toolchains.
-$runtimeDir = $runtimeDirs |
-  Where-Object { Test-Path (Join-Path $_ "FoundationNetworking.dll") } |
+# Pick the runtime directory that contains FoundationNetworking and Foundation together. This pair is
+# the minimum trustable signal that we found the real Swift Windows runtime rather than a tool bin.
+$runtimeDir = $candidateDirs |
+  Where-Object {
+    (Test-Path -LiteralPath (Join-Path $_ "FoundationNetworking.dll")) -and
+    (Test-Path -LiteralPath (Join-Path $_ "Foundation.dll"))
+  } |
   Select-Object -First 1
 
-if (-not $runtimeDir -and $swiftInstallRoot -and (Test-Path $swiftInstallRoot)) {
-  Write-Host "Searching active Swift installation for FoundationNetworking.dll: $swiftInstallRoot"
-  $foundationNetworking = Get-ChildItem $swiftInstallRoot -Filter "FoundationNetworking.dll" -File -Recurse -ErrorAction SilentlyContinue |
+if (-not $runtimeDir) {
+  $runtimeDir = $candidateDirs |
+    Where-Object { Test-Path -LiteralPath (Join-Path $_ "FoundationNetworking.dll") } |
     Select-Object -First 1
-  if ($foundationNetworking) {
-    $runtimeDir = $foundationNetworking.DirectoryName
-    Add-RuntimeDir $runtimeDir
+}
+
+# Last-resort bounded discovery near the active swift.exe. This is intentionally secondary to PATH
+# discovery because hosted setup-swift layouts do not necessarily contain a \Toolchains\ segment.
+if (-not $runtimeDir) {
+  $searchRoot = Split-Path $toolchainBin -Parent
+  for ($i = 0; $i -lt 5 -and $searchRoot; $i++) {
+    Write-Host "Searching for FoundationNetworking.dll under: $searchRoot"
+    $found = Get-ChildItem -LiteralPath $searchRoot -Filter "FoundationNetworking.dll" -File -Recurse -ErrorAction SilentlyContinue |
+      Select-Object -First 1
+    if ($found) {
+      $runtimeDir = $found.DirectoryName
+      Add-CandidateDir $runtimeDir
+      break
+    }
+    $parent = Split-Path $searchRoot -Parent
+    if (-not $parent -or $parent -eq $searchRoot) { break }
+    $searchRoot = $parent
   }
 }
 
 if (-not $runtimeDir) {
+  Write-Host "Active PATH runtime candidates:"
+  $candidateDirs | ForEach-Object { Write-Host "  $_" }
   throw "Could not locate FoundationNetworking.dll for the active Swift toolchain: $swiftExe"
 }
 
 Write-Host "Active Swift: $swiftExe"
 Write-Host "Swift runtime DLL directory: $runtimeDir"
+Write-Host "Swift dependency directories:"
+$candidateDirs | ForEach-Object { Write-Host "  $_" }
 
 $stage = Join-Path $env:TEMP "ptb-portable-$Version"
 if (Test-Path $stage) {
@@ -110,24 +134,22 @@ if (Test-Path $stage) {
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 Copy-Item $exe $stage
 
-# Copy the complete redistributable runtime directory so transitive Foundation/Swift dependencies are
-# kept together. This is intentionally broader than copying only FoundationNetworking.dll.
-$runtimeDlls = @(Get-ChildItem $runtimeDir -Filter "*.dll" -File -ErrorAction Stop)
+# The primary runtime directory establishes the Foundation/Swift DLL set. Then supplement missing DLLs
+# from other active Swift PATH directories (notably toolchain and ICU dirs) without overwriting the
+# primary runtime's versions.
+$runtimeDlls = @(Get-ChildItem -LiteralPath $runtimeDir -Filter "*.dll" -File -ErrorAction Stop)
 if ($runtimeDlls.Count -eq 0) {
   throw "No Swift runtime DLLs found in: $runtimeDir"
 }
 $runtimeDlls | Copy-Item -Destination $stage -Force
 
-# BlocksRuntime.dll and dispatch.dll can live in the active toolchain bin rather than Runtime/bin.
-foreach ($d in @("BlocksRuntime.dll", "dispatch.dll")) {
-  $source = Join-Path $toolchainBin $d
-  if (-not (Test-Path $source) -and $swiftInstallRoot -and (Test-Path $swiftInstallRoot)) {
-    $found = Get-ChildItem $swiftInstallRoot -Filter $d -File -Recurse -ErrorAction SilentlyContinue |
-      Select-Object -First 1
-    if ($found) { $source = $found.FullName }
-  }
-  if (Test-Path $source) {
-    Copy-Item $source $stage -Force
+foreach ($dir in $candidateDirs) {
+  if ($dir -eq $runtimeDir) { continue }
+  foreach ($dll in @(Get-ChildItem -LiteralPath $dir -Filter "*.dll" -File -ErrorAction SilentlyContinue)) {
+    $target = Join-Path $stage $dll.Name
+    if (-not (Test-Path -LiteralPath $target)) {
+      Copy-Item -LiteralPath $dll.FullName -Destination $target
+    }
   }
 }
 
@@ -148,9 +170,11 @@ foreach ($required in @("Foundation.dll", "FoundationNetworking.dll")) {
   }
 }
 
-# Smoke-test the staged folder with the toolchain directories removed from PATH. This approximates a
-# clean end-user machine and catches missing adjacent Swift runtime DLLs before an installer is built.
+# Smoke-test the staged folder with Swift/toolchain directories removed from PATH. This approximates a
+# clean end-user machine and catches transitive missing runtime DLLs before an installer is built.
 $oldPath = $env:PATH
+$probeExit = $null
+$probeOutput = @()
 try {
   $minimalPath = @(
     $stage,
@@ -163,7 +187,7 @@ try {
 } finally {
   $env:PATH = $oldPath
 }
-if ($probeExit -ne 0) {
+if ($null -eq $probeExit -or $probeExit -ne 0) {
   throw "Staged Windows executable failed the clean-PATH runtime smoke test (exit $probeExit): $($probeOutput -join ' ')"
 }
 $probeMatch = $probeOutput | Select-String 'current baked version:\s*([\d.]+)' | Select-Object -First 1
