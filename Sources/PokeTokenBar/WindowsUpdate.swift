@@ -16,7 +16,19 @@ enum WindowsUpdate {
     /// Baked build version (Windows has no Info.plist bundle to read `CFBundleShortVersionString`).
     /// Compared against the latest release tag; bump it alongside each Windows release.
     static let currentVersion = "2.4.5"
-    static let repo = "chattymin/PokeTokenBar"
+
+    /// Windows builds are distributed by this fork. Do not silently cross the trust boundary back to
+    /// upstream: whoever controls this repository's releases controls the bytes offered as updates.
+    static let repo = "8silvergun/PokeTokenBar"
+
+    /// Authenticode certificate thumbprint trusted for unattended installer execution.
+    ///
+    /// SECURITY: keep this empty until the Windows release binary is signed with a real code-signing
+    /// certificate. `WindowsProcess` fails closed for the detached updater when this value is empty,
+    /// so the UI falls back to the GitHub release page instead of executing an unverified download.
+    /// The thumbprint is public certificate metadata, not a secret. After obtaining the certificate,
+    /// paste its uppercase SHA-1 thumbprint here and sign every Windows release with that certificate.
+    static let trustedInstallerSignerThumbprint = ""
 
     struct Available: Sendable, Equatable { let version: String; let url: String }
 
@@ -32,8 +44,10 @@ enum WindowsUpdate {
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let tag = json["tag_name"] as? String,
               let html = json["html_url"] as? String,
-              // The URL is handed to ShellExecuteW → only allow https github.com (no scheme hijack).
-              let htmlURL = URL(string: html), htmlURL.scheme == "https", htmlURL.host == "github.com"
+              // The URL is handed to ShellExecuteW → only allow the configured repository's HTTPS
+              // release pages, not just any github.com URL returned by a compromised/malformed proxy.
+              let htmlURL = URL(string: html), htmlURL.scheme == "https", htmlURL.host == "github.com",
+              htmlURL.path.hasPrefix("/\(repo)/releases/")
         else { return nil }
         let latest = normalize(tag)
         // Respect a "Later" (skip) choice — don't resurface a version the user dismissed.
@@ -44,6 +58,8 @@ enum WindowsUpdate {
 
     /// Open the release page in the default browser (manual download — no brew on Windows).
     static func openReleasePage(_ urlString: String) {
+        guard let url = URL(string: urlString), url.scheme == "https", url.host == "github.com",
+              url.path.hasPrefix("/\(repo)/releases/") else { return }
         _ = urlString.withCString(encodedAs: UTF16.self) { p in
             ShellExecuteW(nil, nil, p, nil, nil, 1)   // SW_SHOWNORMAL
         }
