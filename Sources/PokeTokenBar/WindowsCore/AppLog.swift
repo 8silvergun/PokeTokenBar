@@ -28,12 +28,31 @@ enum AppLog {
     /// 레퍼런스(size-capped 회전, 수 MB)에 맞춤 — 일자별 폴더는 무한 성장/정리 필요라 채택 안 함.
     private static let maxBytes = 2 * 1024 * 1024
 
+    /// Best-effort secret scrubbing before anything reaches the persistent log. Child CLIs sometimes
+    /// echo request headers or token-bearing JSON on stderr, so retaining a diagnostic tail must not
+    /// also turn the log file into a credential store.
+    static func redacted(_ input: String) -> String {
+        var output = input
+        let rules: [(String, String)] = [
+            (#"(?i)(authorization\s*:\s*bearer\s+)[^\s\"']+"#, "$1[REDACTED]"),
+            (#"(?i)((?:access|refresh|id|api)[_-]?token[\"']?\s*[:=]\s*[\"']?)[^\"'\s,;}] +"#.replacingOccurrences(of: "] +", with: "]+"), "$1[REDACTED]"),
+            (#"(?i)(\b(?:sk|sess|oauth)[-_])[A-Za-z0-9._-]{12,}"#, "$1[REDACTED]"),
+        ]
+        for (pattern, replacement) in rules {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let range = NSRange(output.startIndex..<output.endIndex, in: output)
+            output = regex.stringByReplacingMatches(in: output, range: range, withTemplate: replacement)
+        }
+        return output
+    }
+
     static func write(_ message: String) {
         // 실제 .app 실행에서만 기록 — swift test / 로우 바이너리 실행이 프로덕션 로그를 오염시키지
         // 않게(형제 write 경로 writeParitySnapshot·checkLimitNotifications 와 동일 가드). 테스트가
         // 크래시 진단 로그에 fixture 값을 남기고 회전으로 실이력을 밀어내던 결함 차단.
         guard AppEnv.isBundledApp else { return }
-        let line = "[\(ISO8601DateFormatter().string(from: Date()))] \(message)\n"
+        let safeMessage = redacted(message)
+        let line = "[\(ISO8601DateFormatter().string(from: Date()))] \(safeMessage)\n"
         queue.async {
             if let size = try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int,
                size > maxBytes {
