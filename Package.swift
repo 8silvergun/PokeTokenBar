@@ -2,21 +2,28 @@
 import PackageDescription
 
 #if os(Windows)
-let platformExcludes = [
-    "PokeTokenBarApp.swift",
+let executableExcludes = [
+    // Keep upstream macOS Core untouched. The Windows port is first restored
+    // against the previously proven compatibility snapshot, then forward-ported
+    // component-by-component to the current Core.
+    "Core",
     "UI",
-    "Core/CrashReporter.swift",
-    "Core/LoginItem.swift",
-    "Core/NetworkReachabilityMonitor.swift",
-    "Core/SingleInstance.swift",
-    "Core/UpdateChecker.swift",
-    "Core/UsageStore.swift",
-    "Core/AppLog.swift",
-    "Core/BinaryLocator.swift",
-    "Core/ProcessRunner.swift",
+    "PokeTokenBarApp.swift",
+]
+let executableDependencies: [Target.Dependency] = ["SQLite3"]
+let sqliteTargets: [Target] = [
+    .target(name: "SQLite3", path: "Sources/CSQLite")
+]
+let testTargets: [Target] = [
+    .testTarget(
+        name: "PokeTokenBarWindowsTests",
+        dependencies: ["PokeTokenBar"],
+        path: "Tests/PokeTokenBarWindowsTests"
+    )
 ]
 #else
-let platformExcludes = [
+let executableExcludes = [
+    "WindowsCore",
     "WindowsAutostart.swift",
     "WindowsImaging.swift",
     "WindowsMain.swift",
@@ -24,7 +31,19 @@ let platformExcludes = [
     "WindowsSupport.swift",
     "WindowsTray.swift",
     "WindowsUpdate.swift",
-    "WindowsCore",
+]
+let executableDependencies: [Target.Dependency] = []
+let sqliteTargets: [Target] = []
+let testTargets: [Target] = [
+    .testTarget(
+        name: "PokeTokenBarTests",
+        dependencies: ["PokeTokenBar"],
+        path: "Tests/PokeTokenBarTests",
+        resources: [
+            .copy("Fixtures/CodexFork"),
+            .copy("Fixtures/CodexSubagent"),
+        ]
+    )
 ]
 #endif
 
@@ -34,14 +53,9 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "PokeTokenBar",
-            dependencies: [
-                // swift-corelibs on Windows has no system SQLite3 module. Keep the
-                // source-level `import SQLite3` API stable by providing a local C
-                // module with the same module name only on Windows.
-                .target(name: "SQLite3", condition: .when(platforms: [.windows])),
-            ],
+            dependencies: executableDependencies,
             path: "Sources/PokeTokenBar",
-            exclude: platformExcludes,
+            exclude: executableExcludes,
             linkerSettings: [
                 .linkedLibrary("sqlite3", .when(platforms: [.macOS])),
                 // Tray application: avoid flashing a console on normal launch.
@@ -51,21 +65,5 @@ let package = Package(
                 ], .when(platforms: [.windows])),
             ]
         ),
-        .target(
-            name: "SQLite3",
-            path: "Sources/CSQLite"
-        ),
-        .testTarget(
-            name: "PokeTokenBarTests",
-            dependencies: [
-                "PokeTokenBar",
-                .target(name: "SQLite3", condition: .when(platforms: [.windows])),
-            ],
-            path: "Tests/PokeTokenBarTests",
-            resources: [
-                .copy("Fixtures/CodexFork"),
-                .copy("Fixtures/CodexSubagent"),
-            ]
-        ),
-    ]
+    ] + sqliteTargets + testTargets
 )
