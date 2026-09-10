@@ -32,10 +32,25 @@ public struct AntigravityRateLimitsProvider: AntigravityLimitsProviding, Sendabl
         }
     }
 
+    /// Accept an environment override only when it remains inside Google's authenticated API
+    /// namespace. `CLOUD_CODE_URL` is inherited from the user's shell, so treating an arbitrary URL
+    /// as trusted would allow a poisoned environment to receive the OAuth bearer token.
+    static func trustedQuotaEndpoint(from rawBaseURL: String) -> URL? {
+        guard let base = URL(string: rawBaseURL),
+              base.scheme?.lowercased() == "https",
+              let host = base.host?.lowercased(),
+              host.hasSuffix(".googleapis.com"),
+              base.user == nil, base.password == nil,
+              base.port == nil || base.port == 443 else {
+            return nil
+        }
+        return base.appendingPathComponent("v1internal:retrieveUserQuotaSummary")
+    }
+
     private func fetchStatus(accessToken: String) async throws -> AntigravityRateLimitStatus {
         var endpoints: [URL] = []
         if let envURLString = UsageEnvironment.value("CLOUD_CODE_URL"),
-           let envURL = URL(string: envURLString + "/v1internal:retrieveUserQuotaSummary") {
+           let envURL = Self.trustedQuotaEndpoint(from: envURLString) {
             endpoints.append(envURL)
         }
         endpoints.append(Self.dailyURL)
