@@ -17,6 +17,8 @@ jobs:
   windows-build-test:
     name: windows-build-test
     runs-on: windows-2025
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -39,10 +41,110 @@ jobs:
         shell: pwsh
         run: swift test -v
 
-      - name: Upload Windows executable
-        if: success()
+  # Publish only after the Windows build/tests pass on the canonical windows-port branch.
+  # Keeping publication out of the PR job means PR code never receives Actions write permission.
+  publish-windows-artifact:
+    name: publish-windows-artifact
+    if: github.event_name == 'push' && github.ref == 'refs/heads/windows-port'
+    needs: windows-build-test
+    runs-on: windows-2025
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Install Swift 6.3.3
+        uses: SwiftyLab/setup-swift@38f54a76b70d989321de9dc7c840618c08cf56e9 # v1.14.0
+        with:
+          swift-version: '6.3.3'
+
+      - name: Read Windows package version
+        id: version
+        shell: pwsh
+        run: |
+          $source = Get-Content "Sources/PokeTokenBar/WindowsUpdate.swift" -Raw
+          if ($source -notmatch 'static let currentVersion = "([0-9]+\.[0-9]+\.[0-9]+)"') {
+            throw "Could not read WindowsUpdate.currentVersion"
+          }
+          $baseVersion = $Matches[1]
+          $packageVersion = "v$baseVersion-windows.${{ github.run_number }}"
+          "base_version=$baseVersion" >> $env:GITHUB_OUTPUT
+          "package_version=$packageVersion" >> $env:GITHUB_OUTPUT
+          Write-Host "Windows package version: $packageVersion"
+
+      - name: Build release binary
+        shell: pwsh
+        run: swift build -c release -v
+
+      - name: Prepare versioned Windows executable
+        shell: pwsh
+        run: |
+          $package = "${{ steps.version.outputs.package_version }}"
+          $dist = Join-Path $PWD "dist"
+          New-Item -ItemType Directory -Path $dist -Force | Out-Null
+
+          $candidates = @(
+            (Join-Path $PWD ".build\x86_64-unknown-windows-msvc\release\PokeTokenBar.exe"),
+            (Join-Path $PWD ".build\release\PokeTokenBar.exe")
+          )
+          $exe = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $exe) { throw "PokeTokenBar.exe was not found after the release build." }
+
+          Copy-Item $exe (Join-Path $dist "PokeTokenBar-$package-x64.exe") -Force
+
+      - name: Upload latest Windows executable
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: PokeTokenBar-windows-x64
-          path: .build/release/PokeTokenBar.exe
+          name: PokeTokenBar-${{ steps.version.outputs.package_version }}-x64
+          path: dist/PokeTokenBar-${{ steps.version.outputs.package_version }}-x64.exe
           if-no-files-found: error
+          retention-days: 30
+
+      - name: Keep only the latest Windows artifact
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_ARTIFACT_NAME: PokeTokenBar-${{ steps.version.outputs.package_version }}-x64
+        run: |
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+
+          $artifacts = @()
+          $page = 1
+          do {
+            $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/artifacts?per_page=100&page=$page"
+            $response = Invoke-RestMethod -Uri $uri -Headers $headers
+            $artifacts += @($response.artifacts)
+            $count = @($response.artifacts).Count
+            $page += 1
+          } while ($count -eq 100)
+
+          # Clean both the old unversioned artifact name and the new versioned Windows artifacts.
+          $windowsArtifacts = @($artifacts | Where-Object {
+            $_.name -eq "PokeTokenBar-windows-x64" -or
+            $_.name -match '^PokeTokenBar-v[0-9]+\.[0-9]+\.[0-9]+-windows\.[0-9]+-x64$'
+          })
+
+          $current = $windowsArtifacts |
+            Where-Object { $_.name -eq $env:CURRENT_ARTIFACT_NAME } |
+            Sort-Object created_at -Descending |
+            Select-Object -First 1
+
+          if (-not $current) {
+            throw "Current artifact '$env:CURRENT_ARTIFACT_NAME' was not visible through the Actions API."
+          }
+
+          foreach ($artifact in $windowsArtifacts) {
+            if ($artifact.id -eq $current.id) { continue }
+            Write-Host "Deleting older Windows artifact: $($artifact.name) [$($artifact.id)]"
+            $deleteUri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/artifacts/$($artifact.id)"
+            Invoke-RestMethod -Method Delete -Uri $deleteUri -Headers $headers
+          }
+
+          Write-Host "Keeping only: $($current.name) [$($current.id)]"
