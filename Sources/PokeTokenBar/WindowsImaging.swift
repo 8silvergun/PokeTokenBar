@@ -5,12 +5,13 @@ import WinSDK
 /// PNG bytes → Win32 `HICON`, using WIC (Windows Imaging Component, COM) to decode and GDI to
 /// build the icon. Shared by the tray icon (Task-3 #1) and, later, the popover sprite views.
 enum WindowsImaging {
-    /// Decoder resource limits. Remote sprite bytes are untrusted input; dimensions/frame counts are
-    /// checked before allocating BGRA canvases so a tiny compressed image cannot trigger huge memory use.
+    /// Decoder resource limits. These assets are tray/popover sprites (normally well below 256 px),
+    /// so 512 px / 60 GIF frames leaves generous compatibility headroom while bounding worst-case
+    /// composited-frame storage to roughly 60 MiB instead of multiple GiB.
     static let maxEncodedBytes = 8 * 1024 * 1024
-    static let maxDimension = 4096
-    static let maxPixels = 16_777_216       // 4096 × 4096
-    static let maxGIFFrames: UINT = 120
+    static let maxDimension = 512
+    static let maxPixels = 262_144       // 512 × 512
+    static let maxGIFFrames: UINT = 60
 
     static func dimensionsAreSafe(width: Int, height: Int) -> Bool {
         guard width > 0, height > 0,
