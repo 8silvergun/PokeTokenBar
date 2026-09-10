@@ -14,13 +14,25 @@ final class WindowsProcess {
     /// `commandLine`: full command line (already quoted). stdout/stderr are created/truncated at the
     /// given paths; a stdin pipe is opened for `writeStdin`. Child inherits the parent environment.
     init?(commandLine: String, stdoutPath: String, stderrPath: String) {
+        // The legacy updater downloads through a bare `gh` command, which means CreateProcessW would
+        // resolve the executable through the caller's environment/PATH before we ever get a chance to
+        // verify the downloaded installer. Fail closed rather than making an unsigned PATH lookup part
+        // of the software-update trust chain. The UI already falls back to the release page on failure.
+        // A future updater can remove this guard once download is performed in-process from the exact
+        // validated installerURL returned by WindowsUpdate.check().
+        if Self.isLegacyGHUpdateDownload(commandLine) {
+            AppLog.write("blocked legacy gh-based auto-update download; using manual release-page fallback")
+            return nil
+        }
+
         // The in-place updater is a detached .cmd file that eventually executes a downloaded Setup.exe.
-        // Validate the Authenticode signer *before* we let cmd.exe start. This is deliberately fail-closed:
-        // until WindowsUpdate.trustedInstallerSignerThumbprint is configured, auto-update falls back to
-        // the browser rather than silently executing bytes supplied by a GitHub release.
+        // Validate both the launcher and the Authenticode signer *before* we let cmd.exe start. This is
+        // deliberately fail-closed: until WindowsUpdate.trustedInstallerSignerThumbprint is configured,
+        // auto-update falls back to the browser rather than silently executing downloaded bytes.
         if let updaterScript = Self.updaterScriptPath(in: commandLine) {
-            guard Self.updaterScriptHasTrustedInstaller(updaterScript) else {
-                AppLog.write("blocked unattended update: installer signature is missing or untrusted")
+            guard Self.usesSystemCmdForUpdater(commandLine),
+                  Self.updaterScriptHasTrustedInstaller(updaterScript) else {
+                AppLog.write("blocked unattended update: launcher or installer signature is untrusted")
                 return nil
             }
         }
@@ -91,6 +103,17 @@ final class WindowsProcess {
         if pi.hThread != nil { CloseHandle(pi.hThread) }
     }
 
+    /// Identify only the updater's legacy GitHub CLI download command. Other GitHub CLI use remains
+    /// untouched. Matching is whitespace/case tolerant so trivial command-line formatting changes do
+    /// not accidentally re-enable the unsafe PATH-resolved update path.
+    static func isLegacyGHUpdateDownload(_ commandLine: String) -> Bool {
+        let normalized = commandLine
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .lowercased()
+        return normalized.hasPrefix("gh release download ") && normalized.contains(" --repo \(WindowsUpdate.repo.lowercased()) ")
+    }
+
     /// Extract only our own detached updater script from a command line. Other `.cmd` processes (for
     /// example npm-installed codex.cmd) are intentionally unaffected by the signature gate.
     static func updaterScriptPath(in commandLine: String) -> String? {
@@ -99,6 +122,14 @@ final class WindowsProcess {
               let match = regex.firstMatch(in: commandLine, range: NSRange(commandLine.startIndex..., in: commandLine)),
               let range = Range(match.range(at: 1), in: commandLine) else { return nil }
         return String(commandLine[range])
+    }
+
+    /// Detached updates may only be launched by the OS copy of cmd.exe. `ComSpec` and PATH are
+    /// inherited environment values and therefore are not suitable trust anchors for an updater.
+    static func usesSystemCmdForUpdater(_ commandLine: String) -> Bool {
+        guard let cmd = systemExecutablePath("cmd.exe")?.lowercased() else { return false }
+        let trimmed = commandLine.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return trimmed.hasPrefix("\"\(cmd)\" /c ")
     }
 
     private static func updaterScriptHasTrustedInstaller(_ scriptPath: String) -> Bool {
@@ -135,14 +166,8 @@ final class WindowsProcess {
             return false
         }
 
-        var sysDir = [WCHAR](repeating: 0, count: 32_768)
-        let n: UINT = sysDir.withUnsafeMutableBufferPointer { buffer in
-            GetSystemDirectoryW(buffer.baseAddress, UINT(buffer.count))
-        }
-        guard n > 0, Int(n) < sysDir.count else { return false }
-        let system32 = String(decoding: sysDir.prefix(Int(n)), as: UTF16.self)
-        let powershell = system32 + "\\WindowsPowerShell\\v1.0\\powershell.exe"
-        guard FileManager.default.fileExists(atPath: powershell) else { return false }
+        guard let powershell = systemExecutablePath("WindowsPowerShell\\v1.0\\powershell.exe"),
+              FileManager.default.fileExists(atPath: powershell) else { return false }
 
         let escapedPath = path.replacingOccurrences(of: "'", with: "''")
         let ps = "$s=Get-AuthenticodeSignature -LiteralPath '\(escapedPath)'; "
@@ -172,6 +197,16 @@ final class WindowsProcess {
         }
         var code: DWORD = 1
         return GetExitCodeProcess(processInfo.hProcess, &code) && code == 0
+    }
+
+    private static func systemExecutablePath(_ suffix: String) -> String? {
+        var sysDir = [WCHAR](repeating: 0, count: 32_768)
+        let n: UINT = sysDir.withUnsafeMutableBufferPointer { buffer in
+            GetSystemDirectoryW(buffer.baseAddress, UINT(buffer.count))
+        }
+        guard n > 0, Int(n) < sysDir.count else { return nil }
+        let system32 = String(decoding: sysDir.prefix(Int(n)), as: UTF16.self)
+        return system32 + "\\" + suffix
     }
 
     private static func createFile(_ path: String, sa: inout SECURITY_ATTRIBUTES) -> HANDLE? {
