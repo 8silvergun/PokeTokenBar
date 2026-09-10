@@ -34,8 +34,8 @@ enum AppLog {
     static func redacted(_ input: String) -> String {
         var output = input
         let rules: [(String, String)] = [
-            (#"(?i)(authorization\s*:\s*bearer\s+)[^\s\"']+"#, "$1[REDACTED]"),
-            (#"(?i)((?:access|refresh|id|api)[_-]?token[\"']?\s*[:=]\s*[\"']?)[^\"'\s,;}] +"#.replacingOccurrences(of: "] +", with: "]+"), "$1[REDACTED]"),
+            (#"(?i)(authorization\s*:\s*bearer\s+)[^\s"']+"#, "$1[REDACTED]"),
+            (#"(?i)((?:access|refresh|id|api)[_-]?token["']?\s*[:=]\s*["']?)[^"'\s,;}]+"#, "$1[REDACTED]"),
             (#"(?i)(\b(?:sk|sess|oauth)[-_])[A-Za-z0-9._-]{12,}"#, "$1[REDACTED]"),
         ]
         for (pattern, replacement) in rules {
