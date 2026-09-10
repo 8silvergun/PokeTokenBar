@@ -14,6 +14,9 @@ actor SpriteStore {
     private var mem: [String: Data] = [:]
     private var memOrder: [String] = []   // LRU 순서(최근 접근이 뒤). 상한 초과 시 앞(오래된 것)부터 evict
     private let memLimit = 24              // in-memory 스프라이트 캐시 상한 — 세션 중 종 변경 누적 무한증가 방지(#H1)
+    /// Remote image bytes are untrusted input to platform image decoders. Normal sprites are tiny;
+    /// 8 MiB leaves ample headroom while rejecting pathological/corrupt assets before decoding/caching.
+    private let maxAssetBytes = 8 * 1024 * 1024
     private let dir: URL = {
         let d = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("PokeTokenBar/sprites")
@@ -26,12 +29,42 @@ actor SpriteStore {
         "\(speciesID)-\(shiny ? "sh" : "")\(animated ? "a" : "s")"
     }
 
+    private func cachedData(at file: URL) -> Data? {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: file.path),
+              let size = attrs[.size] as? NSNumber,
+              size.intValue > 0, size.intValue <= maxAssetBytes,
+              let data = try? Data(contentsOf: file), !data.isEmpty, data.count <= maxAssetBytes else {
+            // Remove an oversized/corrupt cache entry so it cannot be repeatedly fed to the decoder.
+            try? FileManager.default.removeItem(at: file)
+            return nil
+        }
+        return data
+    }
+
+    private func fetchData(from url: URL) async -> Data? {
+        var request = URLRequest(url: url, timeoutInterval: 15)
+        request.setValue("PokeTokenBar", forHTTPHeaderField: "User-Agent")
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse,
+              http.statusCode == 200,
+              data.count > 0, data.count <= maxAssetBytes else {
+            return nil
+        }
+        // Reject a contradictory Content-Length as well. This is defense-in-depth against malformed
+        // responses; `data.count` remains the authoritative decoder boundary.
+        if let length = http.value(forHTTPHeaderField: "Content-Length"),
+           let declared = Int(length), declared > maxAssetBytes {
+            return nil
+        }
+        return data
+    }
+
     func data(speciesID: Int, animated: Bool, shiny: Bool = false) async -> Data? {
         let key = Self.cacheKey(speciesID: speciesID, animated: animated, shiny: shiny)
         if let d = mem[key] { touch(key); return d }
         let ext = animated ? "gif" : "png"
         let file = dir.appendingPathComponent("\(key).\(ext)")
-        if let d = try? Data(contentsOf: file) { remember(key, d); return d }
+        if let d = cachedData(at: file) { remember(key, d); return d }
         let urlStr: String
         switch (animated, shiny) {
         case (true, false):  urlStr = "\(base)/versions/generation-v/black-white/animated/\(speciesID).gif"
@@ -39,9 +72,7 @@ actor SpriteStore {
         case (false, false): urlStr = "\(base)/\(speciesID).png"
         case (false, true):  urlStr = "\(base)/shiny/\(speciesID).png"
         }
-        guard let url = URL(string: urlStr),
-              let (d, resp) = try? await URLSession.shared.data(from: url),
-              (resp as? HTTPURLResponse)?.statusCode == 200, !d.isEmpty else { return nil }
+        guard let url = URL(string: urlStr), let d = await fetchData(from: url) else { return nil }
         try? d.write(to: file, options: .atomic)   // torn write 방지 — 크래시/강제종료 시 손상 캐시가 남지 않게
         remember(key, d)
         return d
@@ -53,10 +84,8 @@ actor SpriteStore {
         let key = "item-\(itemName)"
         if let d = mem[key] { touch(key); return d }
         let file = dir.appendingPathComponent("\(key).png")
-        if let d = try? Data(contentsOf: file) { remember(key, d); return d }
-        guard let url = URL(string: "\(itemBase)/\(itemName).png"),
-              let (d, resp) = try? await URLSession.shared.data(from: url),
-              (resp as? HTTPURLResponse)?.statusCode == 200, !d.isEmpty else { return nil }
+        if let d = cachedData(at: file) { remember(key, d); return d }
+        guard let url = URL(string: "\(itemBase)/\(itemName).png"), let d = await fetchData(from: url) else { return nil }
         try? d.write(to: file, options: .atomic)
         remember(key, d)
         return d
@@ -67,10 +96,8 @@ actor SpriteStore {
         let key = "egg"
         if let d = mem[key] { touch(key); return d }
         let file = dir.appendingPathComponent("egg.png")
-        if let d = try? Data(contentsOf: file) { remember(key, d); return d }
-        guard let url = URL(string: "\(base)/egg.png"),
-              let (d, resp) = try? await URLSession.shared.data(from: url),
-              (resp as? HTTPURLResponse)?.statusCode == 200, !d.isEmpty else { return nil }
+        if let d = cachedData(at: file) { remember(key, d); return d }
+        guard let url = URL(string: "\(base)/egg.png"), let d = await fetchData(from: url) else { return nil }
         try? d.write(to: file, options: .atomic)
         remember(key, d)
         return d
@@ -87,10 +114,9 @@ actor SpriteStore {
         let key = "noto-\(name)"
         if let d = mem[key] { touch(key); return d }
         let file = dir.appendingPathComponent("\(key).png")
-        if let d = try? Data(contentsOf: file) { remember(key, d); return d }
+        if let d = cachedData(at: file) { remember(key, d); return d }
         guard let url = URL(string: "https://raw.githubusercontent.com/googlefonts/noto-emoji/main/png/128/\(name).png"),
-              let (d, resp) = try? await URLSession.shared.data(from: url),
-              (resp as? HTTPURLResponse)?.statusCode == 200, !d.isEmpty else { return nil }
+              let d = await fetchData(from: url) else { return nil }
         try? d.write(to: file, options: .atomic)
         remember(key, d)
         return d
@@ -98,6 +124,7 @@ actor SpriteStore {
 
     /// in-memory 캐시에 넣고 LRU 상한 유지(#H1) — 세션 중 종이 여러 번 바뀌어도 무한 성장 방지.
     private func remember(_ key: String, _ data: Data) {
+        guard !data.isEmpty, data.count <= maxAssetBytes else { return }
         mem[key] = data
         touch(key)
         while memOrder.count > memLimit {
