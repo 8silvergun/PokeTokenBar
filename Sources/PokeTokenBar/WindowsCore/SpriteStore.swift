@@ -14,6 +14,9 @@ actor SpriteStore {
     private var mem: [String: Data] = [:]
     private var memOrder: [String] = []   // LRU 순서(최근 접근이 뒤). 상한 초과 시 앞(오래된 것)부터 evict
     private let memLimit = 24              // in-memory 스프라이트 캐시 상한 — 세션 중 종 변경 누적 무한증가 방지(#H1)
+    /// Remote sprites are tiny in normal operation. Reject unexpectedly large payloads before they
+    /// reach WIC or the cache, limiting memory/disk amplification from compromised remote content.
+    static let maxPayloadBytes = 8 * 1024 * 1024
     private let dir: URL = {
         let d = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("PokeTokenBar/sprites")
@@ -31,7 +34,7 @@ actor SpriteStore {
         if let d = mem[key] { touch(key); return d }
         let ext = animated ? "gif" : "png"
         let file = dir.appendingPathComponent("\(key).\(ext)")
-        if let d = try? Data(contentsOf: file) { remember(key, d); return d }
+        if let d = cachedData(at: file) { remember(key, d); return d }
         let urlStr: String
         switch (animated, shiny) {
         case (true, false):  urlStr = "\(base)/versions/generation-v/black-white/animated/\(speciesID).gif"
@@ -41,7 +44,7 @@ actor SpriteStore {
         }
         guard let url = URL(string: urlStr),
               let (d, resp) = try? await URLSession.shared.data(from: url),
-              (resp as? HTTPURLResponse)?.statusCode == 200, !d.isEmpty else { return nil }
+              accepted(d, response: resp) else { return nil }
         try? d.write(to: file, options: .atomic)   // torn write 방지 — 크래시/강제종료 시 손상 캐시가 남지 않게
         remember(key, d)
         return d
@@ -53,10 +56,10 @@ actor SpriteStore {
         let key = "item-\(itemName)"
         if let d = mem[key] { touch(key); return d }
         let file = dir.appendingPathComponent("\(key).png")
-        if let d = try? Data(contentsOf: file) { remember(key, d); return d }
+        if let d = cachedData(at: file) { remember(key, d); return d }
         guard let url = URL(string: "\(itemBase)/\(itemName).png"),
               let (d, resp) = try? await URLSession.shared.data(from: url),
-              (resp as? HTTPURLResponse)?.statusCode == 200, !d.isEmpty else { return nil }
+              accepted(d, response: resp) else { return nil }
         try? d.write(to: file, options: .atomic)
         remember(key, d)
         return d
@@ -67,10 +70,10 @@ actor SpriteStore {
         let key = "egg"
         if let d = mem[key] { touch(key); return d }
         let file = dir.appendingPathComponent("egg.png")
-        if let d = try? Data(contentsOf: file) { remember(key, d); return d }
+        if let d = cachedData(at: file) { remember(key, d); return d }
         guard let url = URL(string: "\(base)/egg.png"),
               let (d, resp) = try? await URLSession.shared.data(from: url),
-              (resp as? HTTPURLResponse)?.statusCode == 200, !d.isEmpty else { return nil }
+              accepted(d, response: resp) else { return nil }
         try? d.write(to: file, options: .atomic)
         remember(key, d)
         return d
@@ -87,13 +90,37 @@ actor SpriteStore {
         let key = "noto-\(name)"
         if let d = mem[key] { touch(key); return d }
         let file = dir.appendingPathComponent("\(key).png")
-        if let d = try? Data(contentsOf: file) { remember(key, d); return d }
+        if let d = cachedData(at: file) { remember(key, d); return d }
         guard let url = URL(string: "https://raw.githubusercontent.com/googlefonts/noto-emoji/main/png/128/\(name).png"),
               let (d, resp) = try? await URLSession.shared.data(from: url),
-              (resp as? HTTPURLResponse)?.statusCode == 200, !d.isEmpty else { return nil }
+              accepted(d, response: resp) else { return nil }
         try? d.write(to: file, options: .atomic)
         remember(key, d)
         return d
+    }
+
+    private func accepted(_ data: Data, response: URLResponse) -> Bool {
+        guard let http = response as? HTTPURLResponse,
+              http.statusCode == 200,
+              !data.isEmpty,
+              data.count <= Self.maxPayloadBytes else { return false }
+        let expected = response.expectedContentLength
+        return expected < 0 || expected <= Int64(Self.maxPayloadBytes)
+    }
+
+    /// Do not trust a previously cached file merely because it exists. An oversized/corrupted cache
+    /// must not bypass the same byte limit applied to fresh network responses.
+    private func cachedData(at file: URL) -> Data? {
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: file.path),
+           let size = attrs[.size] as? NSNumber,
+           size.int64Value > Int64(Self.maxPayloadBytes) {
+            try? FileManager.default.removeItem(at: file)
+            return nil
+        }
+        guard let data = try? Data(contentsOf: file),
+              !data.isEmpty,
+              data.count <= Self.maxPayloadBytes else { return nil }
+        return data
     }
 
     /// in-memory 캐시에 넣고 LRU 상한 유지(#H1) — 세션 중 종이 여러 번 바뀌어도 무한 성장 방지.

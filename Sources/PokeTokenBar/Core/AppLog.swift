@@ -47,7 +47,7 @@ enum AppLog {
     /// `write()`+`flush()` pair is untested and reintroduces #174.
     static func writeAndFlush(_ message: String) {
         guard AppEnv.isBundledApp else { return }
-        backend.writeAndFlush(formatted(message))
+        backend.writeAndFlush(formatted(redacted(message)))
     }
 
     static func write(_ message: String) {
@@ -55,7 +55,26 @@ enum AppLog {
         // 않게(형제 write 경로 writeParitySnapshot·checkLimitNotifications 와 동일 가드). 테스트가
         // 크래시 진단 로그에 fixture 값을 남기고 회전으로 실이력을 밀어내던 결함 차단.
         guard AppEnv.isBundledApp else { return }
-        backend.write(formatted(message))
+        backend.write(formatted(redacted(message)))
+    }
+
+    /// Best-effort credential scrubbing at the final logging sink. This catches child-process stderr
+    /// and future callers as well as explicit application logs. Never put the matched secret itself
+    /// in a diagnostic message.
+    static func redacted(_ message: String) -> String {
+        var value = message
+        let rules: [(String, String)] = [
+            (#"(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+"#, "$1[REDACTED]"),
+            (#"(?i)(\bbearer\s+)[A-Za-z0-9._~+\-/=]+"#, "$1[REDACTED]"),
+            (#"(?i)(\b(?:access[_-]?token|refresh[_-]?token|api[_-]?key|token)\b\s*[:=]\s*[\"']?)[^\s\"',;}]+"#, "$1[REDACTED]"),
+            (#"\bsk-[A-Za-z0-9_-]{8,}\b"#, "[REDACTED]")
+        ]
+        for (pattern, replacement) in rules {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let range = NSRange(value.startIndex..<value.endIndex, in: value)
+            value = regex.stringByReplacingMatches(in: value, range: range, withTemplate: replacement)
+        }
+        return value
     }
 
     private static func formatted(_ message: String) -> String {

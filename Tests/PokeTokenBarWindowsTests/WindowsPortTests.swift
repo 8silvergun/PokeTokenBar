@@ -49,5 +49,35 @@ final class WindowsPortTests: XCTestCase {
         XCTAssertFalse(WindowsUpdate.isNewer("2.4.4", than: "2.4.4.1"))   // .0 is older than .1
         XCTAssertFalse(WindowsUpdate.isNewer("2.4.4.1", than: "2.4.4.1"))
     }
+
+    func testAutomaticInstallerFailsClosed() {
+        XCTAssertFalse(WindowsUpdate.automaticInstallerEnabled)
+        XCTAssertEqual(WindowsUpdate.repo, "8silvergun/PokeTokenBar")
+    }
+
+    func testReleasePageTrustBoundary() {
+        XCTAssertTrue(WindowsUpdate.isTrustedReleasePage(
+            "https://github.com/8silvergun/PokeTokenBar/releases/tag/win-2.4.6"))
+        XCTAssertFalse(WindowsUpdate.isTrustedReleasePage(
+            "http://github.com/8silvergun/PokeTokenBar/releases/tag/win-2.4.6"))
+        XCTAssertFalse(WindowsUpdate.isTrustedReleasePage(
+            "https://github.com/chattymin/PokeTokenBar/releases/tag/v2.4.6"))
+        XCTAssertFalse(WindowsUpdate.isTrustedReleasePage(
+            "https://evil.example/8silvergun/PokeTokenBar/releases/tag/win-2.4.6"))
+    }
+
+    func testLogCredentialRedaction() {
+        let input = "Authorization: Bearer abc.def.ghi access_token=secret-value sk-example12345678"
+        let output = AppLog.redacted(input)
+        XCTAssertFalse(output.contains("abc.def.ghi"))
+        XCTAssertFalse(output.contains("secret-value"))
+        XCTAssertFalse(output.contains("sk-example12345678"))
+        XCTAssertTrue(output.contains("[REDACTED]"))
+    }
+
+    func testSpritePayloadLimitIsBounded() {
+        XCTAssertGreaterThan(SpriteStore.maxPayloadBytes, 0)
+        XCTAssertLessThanOrEqual(SpriteStore.maxPayloadBytes, 8 * 1024 * 1024)
+    }
 }
 #endif

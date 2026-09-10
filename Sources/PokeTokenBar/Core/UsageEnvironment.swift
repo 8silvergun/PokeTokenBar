@@ -34,7 +34,28 @@ enum UsageEnvironment {
 
     /// `name` 의 값. 프로세스 환경이 우선이고, 없으면 로그인 셸에서 읽은 값을 쓴다.
     /// 빈 문자열은 미설정과 같게 취급한다(`export FOO=` 는 "여기 있다"가 아니다).
-    static func value(_ name: String) -> String? { resolved[name] }
+    ///
+    /// `CLOUD_CODE_URL` is security-sensitive because its caller attaches an OAuth Bearer token.
+    /// Only HTTPS Google API hosts are accepted; an arbitrary environment variable must never be
+    /// able to redirect that credential to another origin.
+    static func value(_ name: String) -> String? {
+        guard let value = resolved[name] else { return nil }
+        if name == "CLOUD_CODE_URL" { return trustedCloudCodeBaseURL(value) }
+        return value
+    }
+
+    static func trustedCloudCodeBaseURL(_ raw: String) -> String? {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: value),
+              url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased(),
+              host.hasSuffix(".googleapis.com"),
+              url.user == nil,
+              url.password == nil,
+              url.port == nil || url.port == 443,
+              url.fragment == nil else { return nil }
+        return value.hasSuffix("/") ? String(value.dropLast()) : value
+    }
 
     /// 프로세스 생애 1회 조회. 환경변수는 앱이 도는 동안 바뀌지 않으므로 TTL 이 필요 없고,
     /// 못 찾은 결과도 캐시된다(`resolved` 에 키가 없는 것이 곧 negative 캐시) — 재시도하면

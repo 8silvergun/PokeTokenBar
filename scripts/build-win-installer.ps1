@@ -6,6 +6,11 @@
 #   * `swift build -c release` already run in the Swift-for-Windows environment (produces the exe).
 #   * Inno Setup installed:  winget install JRSoftware.InnoSetup
 #
+# Optional release signing:
+#   * Set PTB_SIGNING_CERT_SHA1 to the SHA-1 thumbprint of a code-signing certificate installed in
+#     the current user's certificate store. When set, both the portable EXE and Setup EXE are signed
+#     and verified with signtool. A configured signing request fails closed if signing cannot complete.
+#
 # It assembles the portable folder (release exe + Swift runtime DLLs + VC++ runtime) and compiles
 # installer/PokeTokenBar.iss into PokeTokenBar-Setup-<Version>.exe (per-user AppData installer).
 param(
@@ -37,8 +42,36 @@ Copy-Item (Join-Path $rt "*.dll") $stage -Force
 foreach ($d in "BlocksRuntime.dll", "dispatch.dll") { $s = Join-Path $tc $d; if (Test-Path $s) { Copy-Item $s $stage -Force } }
 foreach ($d in "VCRUNTIME140.dll", "VCRUNTIME140_1.dll", "msvcp140.dll") { $s = "C:\Windows\System32\$d"; if (Test-Path $s) { Copy-Item $s $stage -Force } }
 
+$signingThumbprint = $env:PTB_SIGNING_CERT_SHA1
+$signtool = $null
+if ($signingThumbprint) {
+  $signtool = (Get-Command signtool.exe -ErrorAction SilentlyContinue).Source
+  if (-not $signtool) { throw "PTB_SIGNING_CERT_SHA1 is set but signtool.exe was not found." }
+}
+
+function Invoke-CodeSign([string]$Path) {
+  if (-not $signingThumbprint) { return }
+  Write-Host "Signing: $Path"
+  & $signtool sign /sha1 $signingThumbprint /fd SHA256 /tr https://timestamp.digicert.com /td SHA256 $Path
+  if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed: $Path" }
+  & $signtool verify /pa /all $Path
+  if ($LASTEXITCODE -ne 0) { throw "Authenticode verification failed: $Path" }
+}
+
+# Sign the exact application EXE that will be embedded in the installer.
+Invoke-CodeSign (Join-Path $stage "PokeTokenBar.exe")
+
 $iscc = Get-ChildItem "$env:LOCALAPPDATA\Programs\Inno Setup 6", "${env:ProgramFiles(x86)}\Inno Setup 6", "$env:ProgramFiles\Inno Setup 6" -Filter ISCC.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
 if (-not $iscc) { throw "ISCC.exe (Inno Setup) not found. Install: winget install JRSoftware.InnoSetup" }
 New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
 & $iscc "/DSrcDir=$stage" "/DAppVer=$Version" "/DOutDir=$OutDir" (Join-Path $root "installer\PokeTokenBar.iss")
-Write-Host "Installer: $(Resolve-Path (Join-Path $OutDir "PokeTokenBar-Setup-$Version.exe"))"
+if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed." }
+
+$installer = Join-Path $OutDir "PokeTokenBar-Setup-$Version.exe"
+if (-not (Test-Path $installer)) { throw "Expected installer was not produced: $installer" }
+Invoke-CodeSign $installer
+
+if (-not $signingThumbprint) {
+  Write-Warning "Windows artifacts are UNSIGNED. Set PTB_SIGNING_CERT_SHA1 for public release builds."
+}
+Write-Host "Installer: $(Resolve-Path $installer)"
