@@ -219,27 +219,14 @@ jobs:
             throw "Release asset not found: $asset"
           }
 
-          # Make the step safe to re-run: update the asset if this exact CI tag already exists.
+          # Keep the command idempotent so a re-run can replace the asset for the same CI tag.
           gh release view $env:TAG_NAME --repo $env:GITHUB_REPOSITORY *> $null
           if ($LASTEXITCODE -eq 0) {
             Write-Host "Release $env:TAG_NAME already exists; replacing its installer asset."
             gh release upload $env:TAG_NAME $asset --repo $env:GITHUB_REPOSITORY --clobber
           } else {
-            $notes = @"
-Windows port of PokeTokenBar based on upstream v${{ steps.version.outputs.base_version }}.
-
-- Windows build: $env:TAG_NAME
-- Architecture: x64
-- Installer: $env:ASSET_NAME
-- SHA256: $env:SHA256
-
-The installer may be unsigned unless a repository signing certificate is configured. Automatic in-app installation remains disabled until client-side checksum and signer verification are implemented.
-"@
-            gh release create $env:TAG_NAME $asset `
-              --repo $env:GITHUB_REPOSITORY `
-              --target $env:GITHUB_SHA `
-              --title "PokeTokenBar $env:TAG_NAME" `
-              --notes $notes
+            $notes = "Windows port of PokeTokenBar based on upstream v${{ steps.version.outputs.base_version }}.`n`nWindows build: $env:TAG_NAME`nArchitecture: x64`nInstaller: $env:ASSET_NAME`nSHA256: $env:SHA256`n`nThe installer may be unsigned unless a repository signing certificate is configured. Automatic in-app installation remains disabled until client-side checksum and signer verification are implemented."
+            gh release create $env:TAG_NAME $asset --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "PokeTokenBar $env:TAG_NAME" --notes $notes
           }
           if ($LASTEXITCODE -ne 0) {
             throw "GitHub Release publication failed for $env:TAG_NAME"
