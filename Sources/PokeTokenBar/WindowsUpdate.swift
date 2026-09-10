@@ -13,9 +13,10 @@ import WinSDK
 ///
 /// `normalize` accepts `v<semver>` / `win-<semver>` / bare `<semver>` tags interchangeably.
 enum WindowsUpdate {
-    /// Baked build version (Windows has no Info.plist bundle to read `CFBundleShortVersionString`).
-    /// Compared against the latest release tag; bump it alongside each Windows release.
-    static let currentVersion = "2.4.5"
+    /// Baked upstream-compatible version (Windows has no Info.plist bundle to read
+    /// `CFBundleShortVersionString`). The CI artifact adds a `-windows.<run>` suffix so the
+    /// Windows port build is distinguishable without changing numeric update comparisons.
+    static let currentVersion = "2.5.3"
 
     /// Windows releases for this port must come from the fork that builds the Windows artifacts.
     static let repo = "8silvergun/PokeTokenBar"
