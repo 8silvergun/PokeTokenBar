@@ -79,27 +79,49 @@ jobs:
         shell: pwsh
         run: swift build -c release -v
 
-      - name: Prepare versioned Windows executable
+      - name: Ensure Inno Setup is available
         shell: pwsh
         run: |
-          $package = "${{ steps.version.outputs.package_version }}"
-          $dist = Join-Path $PWD "dist"
-          New-Item -ItemType Directory -Path $dist -Force | Out-Null
-
           $candidates = @(
-            (Join-Path $PWD ".build\x86_64-unknown-windows-msvc\release\PokeTokenBar.exe"),
-            (Join-Path $PWD ".build\release\PokeTokenBar.exe")
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
           )
-          $exe = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if (-not $exe) { throw "PokeTokenBar.exe was not found after the release build." }
+          $iscc = $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+          if (-not $iscc) {
+            Write-Host "Inno Setup not preinstalled; installing with Chocolatey."
+            choco install innosetup --no-progress -y
+          } else {
+            Write-Host "Using Inno Setup: $iscc"
+          }
 
-          Copy-Item $exe (Join-Path $dist "PokeTokenBar-$package-x64.exe") -Force
+      - name: Build runtime-complete Windows installer
+        shell: pwsh
+        run: |
+          ./scripts/build-win-installer.ps1 `
+            -Version "${{ steps.version.outputs.base_version }}" `
+            -OutDir "dist"
 
-      - name: Upload latest Windows executable
+      - name: Prepare versioned Windows installer
+        shell: pwsh
+        run: |
+          $base = "${{ steps.version.outputs.base_version }}"
+          $package = "${{ steps.version.outputs.package_version }}"
+          $source = Join-Path $PWD "dist\PokeTokenBar-Setup-$base.exe"
+          $target = Join-Path $PWD "dist\PokeTokenBar-Setup-$package-x64.exe"
+          if (-not (Test-Path $source)) {
+            throw "Installer was not produced: $source"
+          }
+          Move-Item $source $target -Force
+          $hash = (Get-FileHash $target -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "Installer: $target"
+          Write-Host "SHA256: $hash"
+
+      - name: Upload latest Windows installer
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: PokeTokenBar-${{ steps.version.outputs.package_version }}-x64
-          path: dist/PokeTokenBar-${{ steps.version.outputs.package_version }}-x64.exe
+          path: dist/PokeTokenBar-Setup-${{ steps.version.outputs.package_version }}-x64.exe
           if-no-files-found: error
           retention-days: 30
 
@@ -125,7 +147,7 @@ jobs:
             $page += 1
           } while ($count -eq 100)
 
-          # Clean both the old unversioned artifact name and the new versioned Windows artifacts.
+          # Clean both the old unversioned artifact name and the versioned Windows artifacts.
           $windowsArtifacts = @($artifacts | Where-Object {
             $_.name -eq "PokeTokenBar-windows-x64" -or
             $_.name -match '^PokeTokenBar-v[0-9]+\.[0-9]+\.[0-9]+-windows\.[0-9]+-x64$'
