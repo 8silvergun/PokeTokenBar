@@ -4,7 +4,10 @@ on:
   push:
     branches: [windows-port]
   pull_request:
-    branches: [main]
+    branches: [windows-port, main]
+
+permissions:
+  contents: read
 
 concurrency:
   group: windows-ci-${{ github.ref }}
@@ -15,10 +18,11 @@ jobs:
     name: windows-build-test
     runs-on: windows-2025
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install Swift 6.3.3
-        uses: SwiftyLab/setup-swift@latest
+        uses: SwiftyLab/setup-swift@38f54a76b70d989321de9dc7c840618c08cf56e9 # v1.14.0
         with:
           swift-version: '6.3.3'
 
@@ -36,7 +40,7 @@ jobs:
 
       - name: Upload Windows executable
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: PokeTokenBar-windows-x64
           path: .build/release/PokeTokenBar.exe
