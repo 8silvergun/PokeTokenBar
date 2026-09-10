@@ -54,6 +54,26 @@ final class WindowsPortTests: XCTestCase {
         XCTAssertEqual(WindowsUpdate.repo, "8silvergun/PokeTokenBar")
     }
 
+    func testTrustedInstallerAssetURLIsExactAndForkOwned() {
+        let tag = "win-9.9.9"
+        let name = "PokeTokenBar-Setup-9.9.9.exe"
+        let good = "https://github.com/8silvergun/PokeTokenBar/releases/download/\(tag)/\(name)"
+        XCTAssertNotNil(WindowsUpdate.trustedInstallerAssetURL(good, tag: tag, expectedName: name))
+
+        XCTAssertNil(WindowsUpdate.trustedInstallerAssetURL(
+            "http://github.com/8silvergun/PokeTokenBar/releases/download/\(tag)/\(name)",
+            tag: tag, expectedName: name))
+        XCTAssertNil(WindowsUpdate.trustedInstallerAssetURL(
+            "https://github.com/chattymin/PokeTokenBar/releases/download/\(tag)/\(name)",
+            tag: tag, expectedName: name))
+        XCTAssertNil(WindowsUpdate.trustedInstallerAssetURL(
+            "https://github.com/8silvergun/PokeTokenBar/releases/download/\(tag)/evil-Setup.exe",
+            tag: tag, expectedName: name))
+        XCTAssertNil(WindowsUpdate.trustedInstallerAssetURL(
+            good + "?redirect=evil",
+            tag: tag, expectedName: name))
+    }
+
     func testUpdaterScriptDetectionOnlyMatchesDetachedUpdater() {
         let path = "C:\\Users\\me\\AppData\\Local\\Temp\\ptb-apply-123.cmd"
         let command = "\"C:\\Windows\\System32\\cmd.exe\" /c \"\(path)\""
