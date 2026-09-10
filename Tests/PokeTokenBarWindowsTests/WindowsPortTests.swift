@@ -103,10 +103,11 @@ final class WindowsPortTests: XCTestCase {
 
     func testWindowsImageDecoderResourceLimits() {
         XCTAssertTrue(WindowsImaging.dimensionsAreSafe(width: 128, height: 128))
-        XCTAssertTrue(WindowsImaging.dimensionsAreSafe(width: 4096, height: 4096))
-        XCTAssertFalse(WindowsImaging.dimensionsAreSafe(width: 4097, height: 1))
-        XCTAssertFalse(WindowsImaging.dimensionsAreSafe(width: 1, height: 4097))
+        XCTAssertTrue(WindowsImaging.dimensionsAreSafe(width: 512, height: 512))
+        XCTAssertFalse(WindowsImaging.dimensionsAreSafe(width: 513, height: 1))
+        XCTAssertFalse(WindowsImaging.dimensionsAreSafe(width: 1, height: 513))
         XCTAssertFalse(WindowsImaging.dimensionsAreSafe(width: 0, height: 128))
+        XCTAssertEqual(WindowsImaging.maxGIFFrames, 60)
     }
 }
 #endif
