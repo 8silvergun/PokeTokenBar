@@ -1,0 +1,43 @@
+name: Windows CI
+
+on:
+  push:
+    branches: [windows-port]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: windows-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-build-test:
+    name: windows-build-test
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Swift 6.3.3
+        uses: SwiftyLab/setup-swift@latest
+        with:
+          swift-version: '6.3.3'
+
+      - name: Show Swift version
+        shell: pwsh
+        run: swift --version
+
+      - name: Build release binary
+        shell: pwsh
+        run: swift build -c release -v
+
+      - name: Run Windows tests
+        shell: pwsh
+        run: swift test -v
+
+      - name: Upload Windows executable
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PokeTokenBar-windows-x64
+          path: .build/release/PokeTokenBar.exe
+          if-no-files-found: error
