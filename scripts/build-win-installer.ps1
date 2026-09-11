@@ -14,7 +14,7 @@
 # It assembles the portable folder (release exe + Swift runtime DLLs + VC++ runtime) and compiles
 # installer/PokeTokenBar.iss into PokeTokenBar-Setup-<Version>.exe (per-user AppData installer).
 param(
-  [Parameter(Mandatory)][string]$Version,
+  [Parameter(Mandatory)][ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+$')][string]$Version,
   [string]$OutDir = "."
 )
 
@@ -25,17 +25,7 @@ if (-not (Test-Path $exe)) {
   throw "Release exe not found - run 'swift build -c release' first: $exe"
 }
 
-# Guard: the built exe's baked version MUST match -Version. Forgetting `swift build -c release` after
-# bumping the version can ship a stale binary and cause an endless update loop.
-$bakedOutput = @(& $exe --update-check 2>&1)
-$bakedMatch = $bakedOutput | Select-String 'current baked version:\s*([\d.]+)' | Select-Object -First 1
-if (-not $bakedMatch) {
-  throw "Could not read the baked version from PokeTokenBar.exe --update-check."
-}
-$baked = $bakedMatch.Matches.Groups[1].Value
-if ($baked -ne $Version) {
-  throw "Release exe is v$baked but you asked for v$Version. Run 'swift build -c release' after bumping WindowsUpdate.currentVersion, then retry."
-}
+# Check the baked version only AFTER staging the runtime. A raw EXE may not start without its DLLs.
 
 # setup-swift adds the active toolchain, runtime and ICU usr/bin directories to PATH. Prefer those
 # active directories instead of guessing a particular local/hosted installation layout.
@@ -127,10 +117,7 @@ Write-Host "Swift runtime DLL directory: $runtimeDir"
 Write-Host "Swift dependency directories:"
 $candidateDirs | ForEach-Object { Write-Host "  $_" }
 
-$stage = Join-Path $env:TEMP "ptb-portable-$Version"
-if (Test-Path $stage) {
-  Remove-Item $stage -Recurse -Force
-}
+$stage = Join-Path $env:TEMP "ptb-portable-$Version-$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 Copy-Item $exe $stage
 
@@ -174,7 +161,8 @@ foreach ($required in @("Foundation.dll", "FoundationNetworking.dll")) {
 # clean end-user machine and catches transitive missing runtime DLLs before an installer is built.
 $oldPath = $env:PATH
 $probeExit = $null
-$probeOutput = @()
+$versionFile = Join-Path $stage "baked-version.txt"
+$probe = $null
 try {
   $minimalPath = @(
     $stage,
@@ -182,18 +170,25 @@ try {
     $env:WINDIR
   ) -join ";"
   $env:PATH = $minimalPath
-  $probeOutput = @(& (Join-Path $stage "PokeTokenBar.exe") --update-check 2>&1)
-  $probeExit = $LASTEXITCODE
+  $probe = Start-Process -FilePath (Join-Path $stage "PokeTokenBar.exe") `
+    -ArgumentList @('--version-file', "`"$versionFile`"") -PassThru
+  if (-not $probe.WaitForExit(15000)) {
+    $probe.Kill()
+    throw "Staged executable timed out while reading the baked version."
+  }
+  $probeExit = $probe.ExitCode
 } finally {
   $env:PATH = $oldPath
+  if ($probe) { $probe.Dispose() }
 }
 if ($null -eq $probeExit -or $probeExit -ne 0) {
-  throw "Staged Windows executable failed the clean-PATH runtime smoke test (exit $probeExit): $($probeOutput -join ' ')"
+  throw "Staged Windows executable failed the clean-PATH runtime smoke test (exit $probeExit). Stage: $stage"
 }
-$probeMatch = $probeOutput | Select-String 'current baked version:\s*([\d.]+)' | Select-Object -First 1
-if (-not $probeMatch -or $probeMatch.Matches.Groups[1].Value -ne $Version) {
+if (-not (Test-Path -LiteralPath $versionFile) -or
+    (Get-Content -LiteralPath $versionFile -Raw).Trim() -ne $Version) {
   throw "Staged Windows executable did not report the expected baked version v$Version."
 }
+Remove-Item -LiteralPath $versionFile
 Write-Host "Runtime smoke test passed with clean PATH."
 
 $signingThumbprint = $env:PTB_SIGNING_CERT_SHA1
@@ -224,6 +219,7 @@ if (-not $iscc) {
 }
 
 New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
+$OutDir = (Resolve-Path -LiteralPath $OutDir).Path
 & $iscc "/DSrcDir=$stage" "/DAppVer=$Version" "/DOutDir=$OutDir" (Join-Path $root "installer\PokeTokenBar.iss")
 if ($LASTEXITCODE -ne 0) {
   throw "Inno Setup compilation failed."

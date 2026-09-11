@@ -70,6 +70,7 @@ jobs:
             throw "Installer validation did not produce: $installer"
           }
           Write-Host "Installer packaging validation passed: $installer"
+          ./scripts/test-win-installer.ps1 -Installer $installer -Version $baseVersion
 
   # Publish only after the Windows build/tests pass on the canonical windows-port branch.
   # PR code never receives Actions/Contents write permission.
@@ -132,6 +133,9 @@ jobs:
           ./scripts/build-win-installer.ps1 `
             -Version "${{ steps.version.outputs.base_version }}" `
             -OutDir "dist"
+          ./scripts/test-win-installer.ps1 `
+            -Installer "dist/PokeTokenBar-Setup-${{ steps.version.outputs.base_version }}.exe" `
+            -Version "${{ steps.version.outputs.base_version }}"
 
       - name: Prepare versioned Windows installer
         id: package

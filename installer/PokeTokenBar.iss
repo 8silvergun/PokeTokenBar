@@ -25,6 +25,8 @@ DefaultGroupName=PokeTokenBar
 DisableProgramGroupPage=yes
 DisableDirPage=yes
 PrivilegesRequired=lowest
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir={#OutDir}
 OutputBaseFilename=PokeTokenBar-Setup-{#AppVer}
 Compression=lzma2
@@ -49,5 +51,5 @@ Name: "{userdesktop}\PokeTokenBar"; Filename: "{app}\PokeTokenBar.exe"; Tasks: d
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"
 
 [Run]
-; Launch after install — runs in silent mode too (no 'postinstall'), so an auto-update relaunches the app.
-Filename: "{app}\PokeTokenBar.exe"; Description: "Launch PokeTokenBar"; Flags: nowait
+; Interactive installs offer launch; silent validation/deployment must not start a tray process.
+Filename: "{app}\PokeTokenBar.exe"; Description: "Launch PokeTokenBar"; Flags: nowait postinstall skipifsilent

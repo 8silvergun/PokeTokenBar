@@ -143,6 +143,11 @@ final class UsageEnvironmentTests: XCTestCase {
         let enumerator = try XCTUnwrap(FileManager.default.enumerator(
             at: sources, includingPropertiesForKeys: nil))
         for case let url as URL in enumerator where url.pathExtension == "swift" {
+            // Match Package.swift: this suite checks macOS sources, not the isolated Windows port.
+            if url.pathComponents.contains("WindowsCore") ||
+                (url.deletingLastPathComponent() == sources && url.lastPathComponent.hasPrefix("Windows")) {
+                continue
+            }
             guard !allowed.contains(url.lastPathComponent) else { continue }
             let text = try String(contentsOf: url, encoding: .utf8)
             for (index, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated()
