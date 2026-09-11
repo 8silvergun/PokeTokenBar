@@ -135,7 +135,7 @@ enum WindowsUsageFile {
         let normal = comparablePath(path)
         let native = isWSLUNCPath(normal)
             ? normal
-            : (normal.hasPrefix("\\") ? "\\?\UNC\" + normal.dropFirst(2) : "\\?\" + normal)
+            : (normal.hasPrefix("\\\\") ? "\\\\?\\UNC\\" + normal.dropFirst(2) : "\\?\\" + normal)
         return Array(native.utf16) + [0]
     }
 
@@ -143,8 +143,8 @@ enum WindowsUsageFile {
     /// strict extended-path/final-path behavior used for Windows files.
     static func isWSLUNCPath(_ rawPath: String) -> Bool {
         let path = comparablePath(rawPath)
-        guard path.hasPrefix("\\") else { return false }
-        let components = path.dropFirst(2).split(separator: "\", omittingEmptySubsequences: true)
+        guard path.hasPrefix("\\\\") else { return false }
+        let components = path.dropFirst(2).split(separator: "\\", omittingEmptySubsequences: true)
         return components.first?.caseInsensitiveCompare("wsl.localhost") == .orderedSame
     }
 }

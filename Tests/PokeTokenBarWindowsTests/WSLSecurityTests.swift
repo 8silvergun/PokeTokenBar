@@ -110,10 +110,10 @@ final class WSLSecurityTests: XCTestCase {
     }
 
     func testUNCAncestorsStayWithinTheShare() {
-        XCTAssertTrue(WindowsUsageFile.isWSLUNCPath("\\wsl.localhost\Ubuntu\home\user"))
-        XCTAssertTrue(WindowsUsageFile.isWSLUNCPath("\\WSL.LOCALHOST\Ubuntu\home\user"))
-        XCTAssertFalse(WindowsUsageFile.isWSLUNCPath("\\server\share\home\user"))
-        XCTAssertFalse(WindowsUsageFile.isWSLUNCPath("C:\Users\user"))
+        XCTAssertTrue(WindowsUsageFile.isWSLUNCPath("\\\\wsl.localhost\\Ubuntu\\home\\user"))
+        XCTAssertTrue(WindowsUsageFile.isWSLUNCPath("\\\\WSL.LOCALHOST\\Ubuntu\\home\\user"))
+        XCTAssertFalse(WindowsUsageFile.isWSLUNCPath("\\\\server\\share\\home\\user"))
+        XCTAssertFalse(WindowsUsageFile.isWSLUNCPath("C:\\Users\\user"))
         XCTAssertEqual(WindowsUsageFile.pathPrefixes("\\\\wsl.localhost\\Ubuntu\\home\\user\\.codex\\sessions"), [
             "\\\\wsl.localhost\\Ubuntu\\home", "\\\\wsl.localhost\\Ubuntu\\home\\user",
             "\\\\wsl.localhost\\Ubuntu\\home\\user\\.codex", "\\\\wsl.localhost\\Ubuntu\\home\\user\\.codex\\sessions",
