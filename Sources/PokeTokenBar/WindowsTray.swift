@@ -1259,6 +1259,13 @@ enum WindowsTray {
     private static func toggleDropdown(_ which: Int) {
         openDropdown = (openDropdown == which) ? 0 : which
         if let popupHwnd { InvalidateRect(popupHwnd, nil, true) }
+        if which == 3 && openDropdown == 3 {
+            Task.detached {
+                WSLUsage.refreshInstalledDistributions()
+                let h = lock.withLock { popupHwnd }
+                if let h { InvalidateRect(h, nil, true) }
+            }
+        }
     }
 
     /// Pick a refresh-interval preset (index into [0,60,120,300,900]) and collapse the dropdown.
