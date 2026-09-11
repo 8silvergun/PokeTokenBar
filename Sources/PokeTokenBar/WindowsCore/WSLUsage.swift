@@ -23,6 +23,8 @@ enum WSLUsage {
 
     private static let cacheLock = NSLock()
     nonisolated(unsafe) private static var cachedRoot: CachedRoot?
+    private static let distributionLock = NSLock()
+    nonisolated(unsafe) private static var cachedDistributions: [String] = []
 
     /// The installer writes this under the same Application Support directory used by
     /// the Windows usage cache (`%APPDATA%\\PokeTokenBar\\wsl-distro.txt`).
@@ -37,14 +39,24 @@ enum WSLUsage {
 
     static var selectedDistribution: String? {
         guard let raw = try? String(contentsOf: configurationURL, encoding: .utf8) else { return nil }
-        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = raw.replacingOccurrences(of: "\u{FEFF}", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty, isSafeDistributionName(value) else { return nil }
         return value
     }
 
     static var installedDistributions: [String] {
-        guard let output = runWSL(["--list", "--quiet"]) else { return [] }
-        return output
+        distributionLock.lock()
+        let result = cachedDistributions
+        distributionLock.unlock()
+        return result
+    }
+
+    /// Refreshes the cached distro list off the tray paint path. `wsl.exe` can take
+    /// seconds to start when WSL is cold, so this must never run during WM_PAINT.
+    static func refreshInstalledDistributions() {
+        guard let output = runWSL(["--list", "--quiet"]) else { return }
+        let values = output
             .replacingOccurrences(of: "\r", with: "\n")
             .split(separator: "\n")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -54,6 +66,11 @@ enum WSLUsage {
                 return value
             }
             .filter { !$0.isEmpty && !$0.localizedCaseInsensitiveContains("no installed distributions") && isSafeDistributionName($0) }
+        distributionLock.lock()
+        var unique: [String] = []
+        for value in values where !unique.contains(value) { unique.append(value) }
+        cachedDistributions = unique
+        distributionLock.unlock()
     }
 
     @discardableResult
@@ -63,7 +80,7 @@ enum WSLUsage {
         do {
             try FileManager.default.createDirectory(at: configurationURL.deletingLastPathComponent(),
                                                      withIntermediateDirectories: true)
-            try Data(value.utf8).write(to: configurationURL, options: .atomic)
+            try value.write(to: configurationURL, atomically: true, encoding: .utf8)
             invalidateCache()
             return true
         } catch {
