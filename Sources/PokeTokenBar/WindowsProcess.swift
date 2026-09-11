@@ -13,13 +13,13 @@ final class WindowsProcess {
 
     /// `commandLine`: full command line (already quoted). stdout/stderr are created/truncated at the
     /// given paths; a stdin pipe is opened for `writeStdin`. Child inherits the parent environment.
-    init?(commandLine: String, stdoutPath: String, stderrPath: String) {
+    init?(commandLine: String, stdoutPath: String, stderrPath: String, createNewOutputFiles: Bool = false) {
         var sa = SECURITY_ATTRIBUTES()
         sa.nLength = DWORD(MemoryLayout<SECURITY_ATTRIBUTES>.size)
         sa.bInheritHandle = true
 
-        guard let out = Self.createFile(stdoutPath, sa: &sa),
-              let err = Self.createFile(stderrPath, sa: &sa) else { return nil }
+        guard let out = Self.createFile(stdoutPath, sa: &sa, createNew: createNewOutputFiles),
+              let err = Self.createFile(stderrPath, sa: &sa, createNew: createNewOutputFiles) else { return nil }
         defer { CloseHandle(out); CloseHandle(err) }
 
         var readEnd: HANDLE?
@@ -80,12 +80,13 @@ final class WindowsProcess {
         if pi.hThread != nil { CloseHandle(pi.hThread) }
     }
 
-    private static func createFile(_ path: String, sa: inout SECURITY_ATTRIBUTES) -> HANDLE? {
+    private static func createFile(_ path: String, sa: inout SECURITY_ATTRIBUTES, createNew: Bool) -> HANDLE? {
         var wpath = Array(path.utf16) + [0]
+        let disposition = createNew ? DWORD(CREATE_NEW) : DWORD(CREATE_ALWAYS)
         let h = wpath.withUnsafeBufferPointer {
             CreateFileW($0.baseAddress, DWORD(GENERIC_WRITE),
                         DWORD(FILE_SHARE_READ | FILE_SHARE_WRITE), &sa,
-                        DWORD(CREATE_ALWAYS), DWORD(FILE_ATTRIBUTE_NORMAL), nil)
+                        disposition, DWORD(FILE_ATTRIBUTE_NORMAL), nil)
         }
         if h == INVALID_HANDLE_VALUE { return nil }
         return h
