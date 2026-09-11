@@ -168,7 +168,7 @@ final class WindowsProcess {
         let attributes = OpaquePointer(storage)
         guard InitializeProcThreadAttributeList(attributes, 1, 0, &size) else { return nil }
         var handles: [HANDLE?] = [input, output, error]
-        return handles.withUnsafeMutableBytes { handleBytes in
+        return handles.withUnsafeMutableBytes { (handleBytes: UnsafeMutableRawBufferPointer) -> PROCESS_INFORMATION? in
             defer { DeleteProcThreadAttributeList(attributes) }
             // WinSDK's function-like ProcThreadAttributeValue macro is unavailable
             // in Swift: HandleList (2) | PROC_THREAD_ATTRIBUTE_INPUT (0x00020000).
@@ -235,7 +235,7 @@ final class WindowsProcess {
     }
 
     private static func createFile(_ path: String, sa: inout SECURITY_ATTRIBUTES, createNew: Bool) -> HANDLE? {
-        var wpath = Array(path.utf16) + [0]
+        let wpath = Array(path.utf16) + [0]
         let disposition = createNew ? DWORD(CREATE_NEW) : DWORD(CREATE_ALWAYS)
         let h = wpath.withUnsafeBufferPointer {
             CreateFileW($0.baseAddress, DWORD(GENERIC_WRITE),
