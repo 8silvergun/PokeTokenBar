@@ -78,6 +78,7 @@ enum LocalUsageReader {
     /// `root` 하위(재귀)의 `.jsonl` 파일 중 `modifiedSince` 이후 수정된 것.
     static func jsonlFiles(in root: URL, modifiedSince: Date, allowJSON: Bool = false) -> [URL] {
         let fm = FileManager.default
+        guard !isUnsafeScanURL(root) else { return [] }
         guard let en = fm.enumerator(
             at: root,
             includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
