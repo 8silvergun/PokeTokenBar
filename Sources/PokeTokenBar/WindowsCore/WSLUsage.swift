@@ -141,7 +141,7 @@ enum WSLUsage {
     /// distro names containing spaces and reject path traversal without requiring WSL.
     static func uncBasePath(distribution: String, linuxHome: String) -> String? {
         let home = linuxHome.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard home.hasPrefix("/"), !home.contains("\0"), isSafeDistributionName(distribution) else {
+        guard isSafeLinuxHomePath(home), isSafeDistributionName(distribution) else {
             return nil
         }
         let windowsHome = home.replacingOccurrences(of: "/", with: "\\")
@@ -151,23 +151,30 @@ enum WSLUsage {
     /// Resolve the actual Linux `$HOME`; it is not safe to assume `/home/<name>` because
     /// a distro may use a custom user, root, or a nonstandard home directory.
     private static func linuxHome(for distribution: String) -> String? {
-        let command = "printf '%s' \"$HOME\""
         guard let output = runWSL([
             "--distribution", distribution,
-            "--exec", "sh", "-lc", command,
+            "--exec", "/usr/bin/printenv", "HOME",
         ]) else { return nil }
         let home = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard home.hasPrefix("/"), !home.contains("\0"), !home.contains("\r"), !home.contains("\n") else {
-            return nil
+        return isSafeLinuxHomePath(home) ? home : nil
+    }
+
+    private static func isSafeLinuxHomePath(_ path: String) -> Bool {
+        guard path.hasPrefix("/"), !path.contains("\\"), !path.contains("\0"),
+              !path.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+            return false
         }
-        return home
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        return !components.contains { $0 == "." || $0 == ".." }
     }
 
     private static func isSafeDistributionName(_ value: String) -> Bool {
         // Names returned by `wsl --list --quiet` may contain spaces, but never path
         // separators. Rejecting separators also prevents a malformed config from
         // escaping the `\\wsl.localhost` UNC host component.
-        !value.contains("/") && !value.contains("\\") && !value.contains("\0")
+        !value.isEmpty && !value.hasPrefix("-") &&
+        !value.contains("/") && !value.contains("\\") && !value.contains("\0") &&
+        !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
     }
 
     private static func runWSL(_ arguments: [String]) -> String? {
@@ -184,7 +191,8 @@ enum WSLUsage {
         let executable = "\(systemRoot)\\System32\\wsl.exe"
         let commandLine = ([quote(executable)] + arguments.map(quote)).joined(separator: " ")
         guard let process = WindowsProcess(
-            commandLine: commandLine, stdoutPath: outputURL.path, stderrPath: errorURL.path),
+            commandLine: commandLine, stdoutPath: outputURL.path, stderrPath: errorURL.path,
+            createNewOutputFiles: true),
             process.launched else { return nil }
         process.closeStdin()
         defer { process.cleanup() }
