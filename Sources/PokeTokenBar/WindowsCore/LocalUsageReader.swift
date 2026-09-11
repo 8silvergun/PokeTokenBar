@@ -49,6 +49,27 @@ enum LocalUsageReader {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".gemini/tmp")
     }
 
+    /// Native Windows roots plus the WSL roots selected during installation. WSL is
+    /// intentionally added only when the installer stored a valid distribution; a
+    /// normal Windows-only install keeps the original single-root behavior.
+    static var claudeScanRoots: [URL] {
+        normalizedScanRoots([claudeProjectsDir, WSLUsage.root(for: .claude)])
+    }
+    static var codexScanRoots: [URL] {
+        normalizedScanRoots([codexSessionsDir, WSLUsage.root(for: .codex)])
+    }
+    static var geminiScanRoots: [URL] {
+        normalizedScanRoots([geminiTmpDir, WSLUsage.root(for: .gemini)])
+    }
+
+    private static func normalizedScanRoots(_ roots: [URL?]) -> [URL] {
+        var seen = Set<String>()
+        return roots.compactMap { $0 }.filter { root in
+            let key = root.standardizedFileURL.path.lowercased()
+            return seen.insert(key).inserted
+        }
+    }
+
     // MARK: 스캔 (mtime 윈도우)
 
     /// `root` 하위(재귀)의 `.jsonl` 파일 중 `modifiedSince` 이후 수정된 것.
@@ -99,10 +120,16 @@ enum LocalUsageReader {
 
     /// `modifiedSince` 이후 파일에서 Claude 사용 엔트리(전역 dedup) — 테스트/캐시 미사용 경로.
     static func claudeEntries(modifiedSince: Date, root: URL? = nil) -> [Entry] {
+        claudeEntries(modifiedSince: modifiedSince, roots: root.map { [$0] } ?? claudeScanRoots)
+    }
+
+    static func claudeEntries(modifiedSince: Date, roots: [URL]) -> [Entry] {
         let fmt = localDayFormatter()
         var all: [Entry] = []
-        for file in jsonlFiles(in: root ?? claudeProjectsDir, modifiedSince: modifiedSince) {
-            all.append(contentsOf: parseClaudeFile(file, fmt: fmt))
+        for root in roots {
+            for file in jsonlFiles(in: root, modifiedSince: modifiedSince) {
+                all.append(contentsOf: parseClaudeFile(file, fmt: fmt))
+            }
         }
         return dedupKeepMax(all)
     }
@@ -151,10 +178,16 @@ enum LocalUsageReader {
     }
 
     static func codexEntries(modifiedSince: Date, root: URL? = nil) -> [Entry] {
+        codexEntries(modifiedSince: modifiedSince, roots: root.map { [$0] } ?? codexScanRoots)
+    }
+
+    static func codexEntries(modifiedSince: Date, roots: [URL]) -> [Entry] {
         let fmt = localDayFormatter()
         var entries: [Entry] = []
-        for file in jsonlFiles(in: root ?? codexSessionsDir, modifiedSince: modifiedSince) {
-            entries.append(contentsOf: parseCodexFile(file, fmt: fmt))
+        for root in roots {
+            for file in jsonlFiles(in: root, modifiedSince: modifiedSince) {
+                entries.append(contentsOf: parseCodexFile(file, fmt: fmt))
+            }
         }
         return entries
     }
@@ -235,10 +268,16 @@ enum LocalUsageReader {
     }
 
     static func geminiEntries(modifiedSince: Date, root: URL? = nil) -> [Entry] {
+        geminiEntries(modifiedSince: modifiedSince, roots: root.map { [$0] } ?? geminiScanRoots)
+    }
+
+    static func geminiEntries(modifiedSince: Date, roots: [URL]) -> [Entry] {
         let fmt = localDayFormatter()
         var entries: [Entry] = []
-        for file in jsonlFiles(in: root ?? geminiTmpDir, modifiedSince: modifiedSince, allowJSON: true) {
-            entries.append(contentsOf: parseGeminiFile(file, fmt: fmt))
+        for root in roots {
+            for file in jsonlFiles(in: root, modifiedSince: modifiedSince, allowJSON: true) {
+                entries.append(contentsOf: parseGeminiFile(file, fmt: fmt))
+            }
         }
         return entries
     }

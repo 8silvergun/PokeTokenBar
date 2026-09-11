@@ -12,6 +12,7 @@ $installDir = Join-Path $testRoot 'Installed App'
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 $oldPath = $env:PATH
 $oldState = $env:PTB_STATE_DIR
+$wslConfig = Join-Path $env:APPDATA 'PokeTokenBar\wsl-distro.txt'
 $tray = $null
 $primaryFailure = $null
 $cleanupFailure = $null
@@ -33,6 +34,9 @@ try {
     "/DIR=`"$installDir`"", "/LOG=`"$testRoot\install.log`"")
   $exe = Join-Path $installDir 'PokeTokenBar.exe'
   if (-not (Test-Path -LiteralPath $exe)) { throw 'Installed EXE missing' }
+  if (-not (Test-Path -LiteralPath $wslConfig)) {
+    throw 'Installer did not persist the WSL distribution selection file'
+  }
   $env:PATH = "$env:WINDIR\System32;$env:WINDIR"
   $env:PTB_STATE_DIR = Join-Path $testRoot 'state'
   $versionFile = Join-Path $testRoot 'installed version.txt'
@@ -57,6 +61,9 @@ try {
   }
   $env:PATH = $oldPath
   $env:PTB_STATE_DIR = $oldState
+  if (Test-Path -LiteralPath $wslConfig) {
+    Remove-Item -LiteralPath $wslConfig -Force -ErrorAction SilentlyContinue
+  }
   $uninstaller = Join-Path $installDir 'unins000.exe'
   if (Test-Path -LiteralPath $uninstaller) {
     Invoke-CheckedProcess $uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$testRoot\uninstall.log`"")
