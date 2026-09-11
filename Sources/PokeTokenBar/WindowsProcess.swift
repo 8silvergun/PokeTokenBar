@@ -184,10 +184,12 @@ final class WindowsProcess {
             si.StartupInfo.hStdError = error
             si.lpAttributeList = attributes
             var child = PROCESS_INFORMATION()
-            var command = Array(commandLine.utf16) + [0]
-            let application = applicationPath.map { Array($0.utf16) + [0] } ?? []
-            let ok = application.withUnsafeBufferPointer { app in
-                command.withUnsafeMutableBufferPointer { cmd in
+            var command: [WCHAR] = commandLine.wide
+            let application: [WCHAR]
+            if let applicationPath { application = applicationPath.wide }
+            else { application = [] }
+            let ok: Bool = application.withUnsafeBufferPointer { app in
+                command.withUnsafeMutableBufferPointer { cmd -> Bool in
                     CreateProcessW(application.isEmpty ? nil : app.baseAddress, cmd.baseAddress,
                                    nil, nil, true, DWORD(CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT),
                                    nil, nil, &si.StartupInfo, &child)
