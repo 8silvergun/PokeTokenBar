@@ -1,7 +1,4 @@
 import Foundation
-#if os(Windows)
-import WinSDK
-#endif
 
 /// Claude/Codex 로컬 사용 로그를 직접 파싱해 토큰/비용을 집계한다(ccusage CLI 대체).
 ///
@@ -86,13 +83,13 @@ enum LocalUsageReader {
         var out: [URL] = []
         for case let url as URL in en {
             if isUnsafeScanURL(url) {
-                if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true { en.skipDescendants() }
+                en.skipDescendants()
                 continue
             }
             // 기본 .jsonl. .json 은 Gemini 전용(allowJSON) — Claude 루트 .meta.json 스캔 방지.
             guard url.pathExtension == "jsonl" || (allowJSON && url.pathExtension == "json") else { continue }
-            let v = try? url.resourceValues(forKeys: [.contentModificationDateKey])
-            if let m = v?.contentModificationDate, m >= modifiedSince { out.append(url) }
+            let v = try? url.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey])
+            if v?.isRegularFile == true, let m = v?.contentModificationDate, m >= modifiedSince { out.append(url) }
         }
         return out
     }
@@ -101,14 +98,7 @@ enum LocalUsageReader {
     /// link inside a log directory could otherwise redirect the recursive scan into
     /// another Linux tree or a Windows path mounted at `/mnt/c`.
     static func isUnsafeScanURL(_ url: URL) -> Bool {
-        guard let values = try? url.resourceValues(forKeys: [.isSymbolicLinkKey]) else { return true }
-        if values.isSymbolicLink == true { return true }
-#if os(Windows)
-        var path = Array(url.path.utf16) + [0]
-        let attrs = path.withUnsafeMutableBufferPointer { GetFileAttributesW($0.baseAddress) }
-        if attrs != INVALID_FILE_ATTRIBUTES && (attrs & DWORD(FILE_ATTRIBUTE_REPARSE_POINT)) != 0 { return true }
-#endif
-        return false
+        WindowsUsageFile.isUnsafe(url)
     }
 
     // MARK: Claude 파싱
@@ -127,7 +117,7 @@ enum LocalUsageReader {
 
     /// Claude 파일 하나를 파싱(파일 내 dedup). 캐시가 파일 단위로 호출.
     static func parseClaudeFile(_ url: URL, fmt: DateFormatter) -> [Entry] {
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        guard let data = WindowsUsageFile.read(url), let text = String(data: data, encoding: .utf8) else { return [] }
         var out: [Entry] = []
         for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
             guard line.contains("\"usage\""), line.contains("\"assistant\"") else { continue }
@@ -181,7 +171,7 @@ enum LocalUsageReader {
     /// - output = output_tokens (reasoning 은 output 에 이미 포함), cacheWrite = 0
     /// Codex 파일 하나를 파싱(세션 단위 — token_count 이벤트의 턴 델타). 캐시가 파일 단위로 호출.
     static func parseCodexFile(_ url: URL, fmt: DateFormatter) -> [Entry] {
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        guard let data = WindowsUsageFile.read(url), let text = String(data: data, encoding: .utf8) else { return [] }
         var entries: [Entry] = []
         var turn = 0
         // 실모델은 아래 codexModel 이 로그에서 동적 추출(신모델 자동 대응). 이 값은 세션에 model 라인이
@@ -242,7 +232,7 @@ enum LocalUsageReader {
     ///   input = (input − cached) + tool(toolUsePrompt, 입력측) / cacheRead = cached
     ///   output = output + thoughts(출력측 reasoning) / cacheWrite = 0
     static func parseGeminiFile(_ url: URL, fmt: DateFormatter) -> [Entry] {
-        guard let data = try? Data(contentsOf: url) else { return [] }
+        guard let data = WindowsUsageFile.read(url) else { return [] }
         let file = url.lastPathComponent
         // 메시지 id → (레코드, 토큰) — message_update 가 나중에 오면 갱신
         var byID: [String: Entry] = [:]
