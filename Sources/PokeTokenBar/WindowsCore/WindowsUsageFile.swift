@@ -135,7 +135,7 @@ enum WindowsUsageFile {
         let normal = comparablePath(path)
         let native = isWSLUNCPath(normal)
             ? normal
-            : (normal.hasPrefix("\\\\") ? "\\\\?\\UNC\\" + normal.dropFirst(2) : "\\?\\" + normal)
+            : (normal.hasPrefix("\\\\") ? "\\\\?\\UNC\\" + normal.dropFirst(2) : "\\\\?\\" + normal)
         return Array(native.utf16) + [0]
     }
 
