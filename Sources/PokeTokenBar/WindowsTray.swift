@@ -60,7 +60,7 @@ enum WindowsTray {
     nonisolated(unsafe) private static var emojiIcons: [String: HICON] = [:]   // emoji → color-image HICON (GDI can't draw color emoji)
     nonisolated(unsafe) private static var evoIcons: [Int: HICON] = [:]   // evo-line speciesID → sprite HICON (cache)
     nonisolated(unsafe) private static var selectedHomeProvider = 0   // 0=Claude 1=Codex 2=Gemini 3=OpenCode 4=Hermes (Home tabs)
-    nonisolated(unsafe) private static var openDropdown = 0   // Settings: 0=none, 1=language, 2=interval (expanded inline)
+    nonisolated(unsafe) private static var openDropdown = 0   // Settings: 0=none, 1=language, 2=interval, 3=WSL
     nonisolated(unsafe) private static var settingsScroll: Int32 = 0   // Settings tab mouse-wheel scroll (px)
     nonisolated(unsafe) static var settingsContentH: Int32 = 0   // total Settings content height (scroll clamp)
     nonisolated(unsafe) private static var uiLang = "en"                  // current UI language for L()
@@ -1082,7 +1082,8 @@ enum WindowsTray {
 
         // ===== General =====
         settingsLabel(hdc, y, L("일반", "General", "一般")); y += 24
-        let genH = 8 + rowH * 3 + (openDropdown == 1 ? optH * 3 : 0) + (openDropdown == 2 ? optH * 5 : 0)
+        let wslOptions = [L("Windows files only", "Windows files only", "Windows files only")] + WSLUsage.installedDistributions
+        let genH = 8 + rowH * 4 + (openDropdown == 1 ? optH * 3 : 0) + (openDropdown == 2 ? optH * 5 : 0) + (openDropdown == 3 ? optH * Int32(wslOptions.count) : 0)
         drawCard(hdc, y, genH)
         var ry = y + 4
         let langName = disp.languageCode == "ko" ? "한국어" : (disp.languageCode == "ja" ? "日本語" : "English")
@@ -1097,6 +1098,13 @@ enum WindowsTray {
         if openDropdown == 2 {
             for (i, p) in [0, 60, 120, 300, 900].enumerated() {
                 drawOptionRow(hdc, ry, intervalLabel(p), selected: sec == p, action: 70 + i); ry += optH
+            }
+        }
+        let wslValue = WSLUsage.selectedDistribution ?? wslOptions[0]
+        drawDropdownHeader(hdc, ry, L("WSL 배포판", "WSL distribution", "WSL ディストリビューション"), value: wslValue, open: openDropdown == 3, action: 62); ry += rowH
+        if openDropdown == 3 {
+            for (i, option) in wslOptions.enumerated() {
+                drawOptionRow(hdc, ry, option, selected: (i == 0 && WSLUsage.selectedDistribution == nil) || option == WSLUsage.selectedDistribution, action: 80 + i); ry += optH
             }
         }
         drawSwitchRow(hdc, ry, L("로그인 시 자동 시작", "Launch at login", "ログイン時に起動"), sub: nil, on: WindowsAutostart.isEnabled(), action: 53)
@@ -1263,6 +1271,15 @@ enum WindowsTray {
         if let popupHwnd { InvalidateRect(popupHwnd, nil, true) }
     }
 
+    private static func selectWSL(_ index: Int) {
+        let options = WSLUsage.installedDistributions
+        let selected = index == 0 ? nil : (options.indices.contains(index - 1) ? options[index - 1] : nil)
+        guard WSLUsage.setSelectedDistribution(selected) else { return }
+        openDropdown = 0
+        if let popupHwnd { InvalidateRect(popupHwnd, nil, true) }
+        scheduleRefresh()
+    }
+
     /// Toggle a "show in tray tooltip" flag, then rebuild the tooltip on the next refresh.
     private static func toggleTip(_ key: String) {
         let on = UserDefaults.standard.object(forKey: key) as? Bool ?? (key != "tipShowCost")
@@ -1354,7 +1371,9 @@ enum WindowsTray {
             case 57: toggleTip("tipShowLimit")
             case 60: toggleDropdown(1)   // language dropdown
             case 61: toggleDropdown(2)   // interval dropdown
+            case 62: toggleDropdown(3)   // WSL distribution dropdown
             case 70...74: selectInterval(action - 70)   // interval preset
+            case 80...99: selectWSL(action - 80)
             default: doAction(action)
             }
             return
