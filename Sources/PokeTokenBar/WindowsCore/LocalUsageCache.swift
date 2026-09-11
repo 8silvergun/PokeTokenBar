@@ -40,14 +40,21 @@ actor LocalUsageCache {
     private let claudeRoot: URL?
     private let codexRoot: URL?
     private let geminiRoot: URL?
+    private let claudeRoots: [URL]?
+    private let codexRoots: [URL]?
+    private let geminiRoots: [URL]?
     private let fileURL: URL
     private let now: @Sendable () -> Date
 
     init(claudeRoot: URL? = nil, codexRoot: URL? = nil, geminiRoot: URL? = nil, fileURL: URL? = nil,
+         claudeRoots: [URL]? = nil, codexRoots: [URL]? = nil, geminiRoots: [URL]? = nil,
          now: @escaping @Sendable () -> Date = Date.init) {
         self.claudeRoot = claudeRoot
         self.codexRoot = codexRoot
         self.geminiRoot = geminiRoot
+        self.claudeRoots = claudeRoots
+        self.codexRoots = codexRoots
+        self.geminiRoots = geminiRoots
         self.fileURL = fileURL ?? Self.defaultFileURL
         self.now = now
     }
@@ -62,8 +69,12 @@ actor LocalUsageCache {
     func claudeEntries(modifiedSince: Date) -> [LocalUsageReader.Entry] {
         ensureLoaded()
         let fmt = LocalUsageReader.localDayFormatter()
-        let all = collect(root: claudeRoot ?? LocalUsageReader.claudeProjectsDir, since: modifiedSince, cache: &claudeCache) {
-            LocalUsageReader.parseClaudeFile($0, fmt: fmt)
+        let roots = claudeRoots ?? (claudeRoot.map { [$0] } ?? LocalUsageReader.claudeScanRoots)
+        var all: [LocalUsageReader.Entry] = []
+        for root in roots {
+            all.append(contentsOf: collect(root: root, since: modifiedSince, cache: &claudeCache) {
+                LocalUsageReader.parseClaudeFile($0, fmt: fmt)
+            })
         }
         saveIfNeeded()
         return LocalUsageReader.dedupKeepMax(all)
@@ -72,8 +83,12 @@ actor LocalUsageCache {
     func codexEntries(modifiedSince: Date) -> [LocalUsageReader.Entry] {
         ensureLoaded()
         let fmt = LocalUsageReader.localDayFormatter()
-        let r = collect(root: codexRoot ?? LocalUsageReader.codexSessionsDir, since: modifiedSince, cache: &codexCache) {
-            LocalUsageReader.parseCodexFile($0, fmt: fmt)
+        let roots = codexRoots ?? (codexRoot.map { [$0] } ?? LocalUsageReader.codexScanRoots)
+        var r: [LocalUsageReader.Entry] = []
+        for root in roots {
+            r.append(contentsOf: collect(root: root, since: modifiedSince, cache: &codexCache) {
+                LocalUsageReader.parseCodexFile($0, fmt: fmt)
+            })
         }
         saveIfNeeded()
         return r
@@ -82,9 +97,13 @@ actor LocalUsageCache {
     func geminiEntries(modifiedSince: Date) -> [LocalUsageReader.Entry] {
         ensureLoaded()
         let fmt = LocalUsageReader.localDayFormatter()
-        let r = collect(root: geminiRoot ?? LocalUsageReader.geminiTmpDir, since: modifiedSince,
-                        cache: &geminiCache, allowJSON: true) {
-            LocalUsageReader.parseGeminiFile($0, fmt: fmt)
+        let roots = geminiRoots ?? (geminiRoot.map { [$0] } ?? LocalUsageReader.geminiScanRoots)
+        var r: [LocalUsageReader.Entry] = []
+        for root in roots {
+            r.append(contentsOf: collect(root: root, since: modifiedSince,
+                                         cache: &geminiCache, allowJSON: true) {
+                LocalUsageReader.parseGeminiFile($0, fmt: fmt)
+            })
         }
         saveIfNeeded()
         return r
