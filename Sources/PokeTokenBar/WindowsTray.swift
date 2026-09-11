@@ -1373,7 +1373,7 @@ enum WindowsTray {
             case 61: toggleDropdown(2)   // interval dropdown
             case 62: toggleDropdown(3)   // WSL distribution dropdown
             case 70...74: selectInterval(action - 70)   // interval preset
-            case 80...99: selectWSL(action - 80)
+            case 80...199: selectWSL(action - 80)
             default: doAction(action)
             }
             return
