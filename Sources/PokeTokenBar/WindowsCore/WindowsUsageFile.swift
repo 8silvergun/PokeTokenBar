@@ -62,9 +62,7 @@ enum WindowsUsageFile {
         var info = BY_HANDLE_FILE_INFORMATION()
         guard GetFileType(handle) == DWORD(FILE_TYPE_DISK), GetFileInformationByHandle(handle, &info),
               (info.dwFileAttributes & DWORD(FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) == 0,
-              let finalPath = finalPath(handle),
-              let requestedPath = longPath(url.path),
-              comparablePath(finalPath).caseInsensitiveCompare(comparablePath(requestedPath)) == .orderedSame,
+              openedPathMatchesRequest(handle, url.path),
               !isUnsafe(url) else { return nil }
         let length = (UInt64(info.nFileSizeHigh) << 32) | UInt64(info.nFileSizeLow)
         guard length <= UInt64(maxBytes) else { return nil }
@@ -82,6 +80,18 @@ enum WindowsUsageFile {
             remaining -= Int(received)
         }
         return result
+    }
+
+    /// WSL's UNC provider is a virtual filesystem. On affected Windows/WSL
+    /// versions the handle APIs used for a DOS final-path comparison return
+    /// `ERROR_INVALID_FUNCTION`, even though CreateFile/ReadFile work normally.
+    /// In that case the earlier ancestor and handle attribute checks remain the
+    /// safety boundary; if either API does return a path, a mismatch is still
+    /// rejected instead of silently trusted.
+    private static func openedPathMatchesRequest(_ handle: HANDLE, _ requested: String) -> Bool {
+        guard let final = finalPath(handle) else { return isWSLUNCPath(requested) }
+        guard let expected = longPath(requested) else { return false }
+        return comparablePath(final).caseInsensitiveCompare(comparablePath(expected)) == .orderedSame
     }
 
     private static func finalPath(_ handle: HANDLE) -> String? {
@@ -103,7 +113,12 @@ enum WindowsUsageFile {
                 GetLongPathNameW(input.baseAddress, output.baseAddress, DWORD(output.count))
             }
         }
-        guard count > 0, Int(count) < buffer.count else { return nil }
+        // GetLongPathNameW is optional for the WSL provider. Returning the
+        // already-normalized UNC path still lets a successful final-path query
+        // perform an equality check without weakening local-drive validation.
+        guard count > 0, Int(count) < buffer.count else {
+            return isWSLUNCPath(path) ? comparablePath(path) : nil
+        }
         return String(decoding: buffer.prefix(Int(count)), as: UTF16.self)
     }
 
@@ -114,12 +129,23 @@ enum WindowsUsageFile {
         return windows
     }
 
-    /// Apply the extended namespace only after component validation. Deep Claude
-    /// project directories can exceed MAX_PATH even with perfectly ordinary names.
+    /// WSL's virtual UNC provider does not consistently support the extended
+    /// namespace. Deep Windows paths still use it after component validation.
     private static func win32Path(_ path: String) -> [WCHAR] {
         let normal = comparablePath(path)
-        let extended = normal.hasPrefix("\\\\") ? "\\\\?\\UNC\\" + normal.dropFirst(2) : "\\\\?\\" + normal
-        return Array(extended.utf16) + [0]
+        let native = isWSLUNCPath(normal)
+            ? normal
+            : (normal.hasPrefix("\\\\") ? "\\\\?\\UNC\\" + normal.dropFirst(2) : "\\\\?\\" + normal)
+        return Array(native.utf16) + [0]
+    }
+
+    /// True only for the WSL localhost projection. Other UNC shares keep the
+    /// strict extended-path/final-path behavior used for Windows files.
+    static func isWSLUNCPath(_ rawPath: String) -> Bool {
+        let path = comparablePath(rawPath)
+        guard path.hasPrefix("\\\\") else { return false }
+        let components = path.dropFirst(2).split(separator: "\\", omittingEmptySubsequences: true)
+        return components.first?.caseInsensitiveCompare("wsl.localhost") == .orderedSame
     }
 }
 #endif
