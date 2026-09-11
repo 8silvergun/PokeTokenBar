@@ -42,6 +42,35 @@ enum WSLUsage {
         return value
     }
 
+    static var installedDistributions: [String] {
+        guard let output = runWSL(["--list", "--quiet"]) else { return [] }
+        return output
+            .replacingOccurrences(of: "\r", with: "\n")
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .map { line in
+                var value = line
+                while value.first == "*" { value.removeFirst(); value = value.trimmingCharacters(in: .whitespaces) }
+                return value
+            }
+            .filter { !$0.isEmpty && !$0.localizedCaseInsensitiveContains("no installed distributions") && isSafeDistributionName($0) }
+    }
+
+    @discardableResult
+    static func setSelectedDistribution(_ distribution: String?) -> Bool {
+        let value = distribution?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard value.isEmpty || isSafeDistributionName(value) else { return false }
+        do {
+            try FileManager.default.createDirectory(at: configurationURL.deletingLastPathComponent(),
+                                                     withIntermediateDirectories: true)
+            try Data(value.utf8).write(to: configurationURL, options: .atomic)
+            invalidateCache()
+            return true
+        } catch {
+            return false
+        }
+    }
+
     /// Returns the WSL log root for one provider. The returned URL is a Windows UNC
     /// path, so Foundation's normal directory enumerator can scan it without copying
     /// logs out of the Linux filesystem.
