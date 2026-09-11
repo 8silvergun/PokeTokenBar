@@ -113,16 +113,22 @@ actor LocalUsageCache {
                          allowJSON: Bool = false,
                          parse: (URL) -> [LocalUsageReader.Entry]) -> [LocalUsageReader.Entry] {
         let fm = FileManager.default
+        guard !LocalUsageReader.isUnsafeScanURL(root) else { return [] }
         guard let en = fm.enumerator(
             at: root,
-            includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
+            includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey, .isDirectoryKey, .isSymbolicLinkKey],
             options: [.skipsHiddenFiles]) else { return [] }
         var result: [LocalUsageReader.Entry] = []
         for case let url as URL in en {
+            if LocalUsageReader.isUnsafeScanURL(url) {
+                en.skipDescendants()
+                continue
+            }
             // 기본 .jsonl. .json 은 Gemini 루트에서만(allowJSON) — Claude 루트의 대량
             // .meta.json 등을 스캔/빈 blob 으로 캐시하지 않도록 스코프 제한.
             guard url.pathExtension == "jsonl" || (allowJSON && url.pathExtension == "json") else { continue }
-            guard let v = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
+            guard let v = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey]),
+                  v.isRegularFile == true,
                   let mtime = v.contentModificationDate, mtime >= since else { continue }
             let size = v.fileSize ?? 0
             let key = url.path

@@ -55,7 +55,7 @@ enum WSLUsage {
     /// Refreshes the cached distro list off the tray paint path. `wsl.exe` can take
     /// seconds to start when WSL is cold, so this must never run during WM_PAINT.
     static func refreshInstalledDistributions() {
-        guard let output = runWSL(["--list", "--quiet"]) else { return }
+        guard let output = runWSL(["--list", "--quiet"], allowUTF16: true) else { return }
         let values = output
             .replacingOccurrences(of: "\r", with: "\n")
             .split(separator: "\n")
@@ -140,90 +140,77 @@ enum WSLUsage {
     /// Pure path construction is kept internal so the Windows test target can verify
     /// distro names containing spaces and reject path traversal without requiring WSL.
     static func uncBasePath(distribution: String, linuxHome: String) -> String? {
-        let home = linuxHome.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard home.hasPrefix("/"), !home.contains("\0"), isSafeDistributionName(distribution) else {
+        guard isSafeLinuxHomePath(linuxHome), isSafeDistributionName(distribution) else {
             return nil
         }
-        let windowsHome = home.replacingOccurrences(of: "/", with: "\\")
+        let windowsHome = linuxHome.replacingOccurrences(of: "/", with: "\\")
         return "\\\\wsl.localhost\\\(distribution)\(windowsHome)"
     }
 
     /// Resolve the actual Linux `$HOME`; it is not safe to assume `/home/<name>` because
     /// a distro may use a custom user, root, or a nonstandard home directory.
     private static func linuxHome(for distribution: String) -> String? {
-        let command = "printf '%s' \"$HOME\""
         guard let output = runWSL([
             "--distribution", distribution,
-            "--exec", "sh", "-lc", command,
+            "--exec", "/usr/bin/printenv", "HOME",
         ]) else { return nil }
-        let home = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard home.hasPrefix("/"), !home.contains("\0"), !home.contains("\r"), !home.contains("\n") else {
-            return nil
+        // Remove only printenv's single record terminator, not arbitrary whitespace
+        // supplied as part of HOME (which could conceal a malformed path).
+        var home = output
+        if home.hasSuffix("\r\n") { home.removeLast(2) }
+        else if home.hasSuffix("\n") { home.removeLast() }
+        return isSafeLinuxHomePath(home) ? home : nil
+    }
+
+    private static func isSafeLinuxHomePath(_ path: String) -> Bool {
+        if path == "/" { return true }  // valid root user's custom HOME
+        guard path.hasPrefix("/"), path.utf16.count < 32700 else { return false }
+        return path.dropFirst().split(separator: "/", omittingEmptySubsequences: false)
+            .allSatisfy { isSafePathComponent(String($0)) }
+    }
+
+    static func isSafeDistributionName(_ value: String) -> Bool {
+        !value.hasPrefix("-") && value.utf16.count <= 255 && isSafePathComponent(value)
+    }
+
+    /// Linux permits names that Win32 aliases or interprets specially. Reject those
+    /// rather than silently reading a different path through the UNC projection.
+    static func isSafePathComponent(_ value: String) -> Bool {
+        guard !value.isEmpty, value != ".", value != "..",
+              !value.hasSuffix("."), !value.hasSuffix(" "),
+              !value.contains(where: { "<>:\"/\\|?*".contains($0) }),
+              !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { return false }
+        let stem = value.split(separator: ".", omittingEmptySubsequences: false)[0].uppercased()
+        let devices = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
+        if devices.contains(stem) { return false }
+        if (stem.hasPrefix("COM") || stem.hasPrefix("LPT")), stem.count == 4,
+           let last = stem.last, "123456789¹²³".contains(last) { return false }
+        return true
+    }
+
+    private static func runWSL(_ arguments: [String], allowUTF16: Bool = false) -> String? {
+        guard let executable = WindowsProcess.systemExecutable("wsl.exe") else { return nil }
+        let result = WindowsProcess.capture(executable: executable, arguments: arguments)
+        guard result.failure == nil, result.exitCode == 0, !result.stdout.isEmpty else { return nil }
+        return decodeProcessOutput(result.stdout, allowUTF16: allowUTF16)
+    }
+
+    /// WSL's distro list may be UTF-16LE; the Linux printenv stream must be UTF-8.
+    /// Never delete embedded NULs to turn invalid control data into an accepted path.
+    static func decodeProcessOutput(_ data: Data, allowUTF16: Bool = false) -> String? {
+        var decoded: String?
+        if allowUTF16, data.starts(with: [0xFF, 0xFE]) {
+            decoded = String(data: data.dropFirst(2), encoding: .utf16LittleEndian)
+        } else if allowUTF16, data.starts(with: [0xFE, 0xFF]) {
+            decoded = String(data: data.dropFirst(2), encoding: .utf16BigEndian)
+        } else if allowUTF16, data.contains(0), data.count.isMultiple(of: 2) {
+            decoded = String(data: data, encoding: .utf16LittleEndian)
+        } else {
+            decoded = String(data: data, encoding: .utf8)
         }
-        return home
-    }
-
-    private static func isSafeDistributionName(_ value: String) -> Bool {
-        // Names returned by `wsl --list --quiet` may contain spaces, but never path
-        // separators. Rejecting separators also prevents a malformed config from
-        // escaping the `\\wsl.localhost` UNC host component.
-        !value.contains("/") && !value.contains("\\") && !value.contains("\0")
-    }
-
-    private static func runWSL(_ arguments: [String]) -> String? {
-        let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("poketokenbar-wsl-\(UUID().uuidString).out")
-        let errorURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("poketokenbar-wsl-\(UUID().uuidString).err")
-        defer {
-            try? FileManager.default.removeItem(at: outputURL)
-            try? FileManager.default.removeItem(at: errorURL)
-        }
-
-        let systemRoot = ProcessInfo.processInfo.environment["SystemRoot"] ?? "C:\\Windows"
-        let executable = "\(systemRoot)\\System32\\wsl.exe"
-        let commandLine = ([quote(executable)] + arguments.map(quote)).joined(separator: " ")
-        guard let process = WindowsProcess(
-            commandLine: commandLine, stdoutPath: outputURL.path, stderrPath: errorURL.path),
-            process.launched else { return nil }
-        process.closeStdin()
-        defer { process.cleanup() }
-        guard process.waitFor(8), process.exitCode == 0,
-              let data = try? Data(contentsOf: outputURL), !data.isEmpty else { return nil }
-        return decodeProcessOutput(data)
-    }
-
-    /// `wsl.exe` has emitted UTF-16 output on older Windows builds and UTF-8 on newer
-    /// builds. Accept both and remove any NUL padding before parsing.
-    private static func decodeProcessOutput(_ data: Data) -> String? {
-        let decoded = String(data: data, encoding: .utf8)
-            ?? String(data: data, encoding: .utf16LittleEndian)
-            ?? String(data: data, encoding: .utf16BigEndian)
-        return decoded?.replacingOccurrences(of: "\0", with: "")
-    }
-
-    /// Quote one argument for CreateProcess' command-line parser. WSL distro names
-    /// commonly contain spaces, so passing an unquoted name would select the wrong distro.
-    private static func quote(_ value: String) -> String {
-        var escaped = ""
-        var backslashes = 0
-        for character in value {
-            if character == "\\" {
-                backslashes += 1
-            } else if character == "\"" {
-                escaped += String(repeating: "\\", count: backslashes * 2 + 1)
-                escaped.append("\"")
-                backslashes = 0
-            } else {
-                if backslashes > 0 {
-                    escaped += String(repeating: "\\", count: backslashes)
-                    backslashes = 0
-                }
-                escaped.append(character)
-            }
-        }
-        if backslashes > 0 { escaped += String(repeating: "\\", count: backslashes * 2) }
-        return "\"\(escaped)\""
+        guard var value = decoded, !value.contains("\0") else { return nil }
+        if value.first == "\u{FEFF}" { value.removeFirst() }
+        return value
     }
 }
 #endif
