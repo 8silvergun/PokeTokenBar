@@ -79,5 +79,17 @@ final class WindowsPortTests: XCTestCase {
         XCTAssertGreaterThan(SpriteStore.maxPayloadBytes, 0)
         XCTAssertLessThanOrEqual(SpriteStore.maxPayloadBytes, 8 * 1024 * 1024)
     }
+
+    func testWSLPathUsesSelectedDistributionAndLinuxHome() {
+        XCTAssertEqual(
+            WSLUsage.uncBasePath(distribution: "Ubuntu 24.04", linuxHome: "/home/nana"),
+            "\\\\wsl.localhost\\Ubuntu 24.04\\home\\nana")
+        XCTAssertNil(WSLUsage.uncBasePath(distribution: "Ubuntu/../Windows", linuxHome: "/home/nana"))
+        XCTAssertNil(WSLUsage.uncBasePath(distribution: "Ubuntu", linuxHome: "C:\\Users\\nana"))
+    }
+
+    func testWSLConfigurationFileNameIsStable() {
+        XCTAssertEqual(WSLUsage.configurationFileName, "wsl-distro.txt")
+    }
 }
 #endif
