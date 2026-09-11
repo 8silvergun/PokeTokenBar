@@ -63,15 +63,21 @@ struct PTBWindowsCLI {
 
         print("PokeTokenBar — Windows CLI")
         print("home: \(FileManager.default.homeDirectoryForCurrentUser.path)")
+        if let distro = WSLUsage.selectedDistribution,
+           let root = WSLUsage.configuredBaseRoot {
+            print("wsl: \(distro) → \(root.path)")
+        } else {
+            print("wsl: disabled (no distribution selected or unavailable)")
+        }
         print(String(repeating: "=", count: 52))
 
-        report("Claude", dir: LocalUsageReader.claudeProjectsDir,
+        report("Claude", dirs: LocalUsageReader.claudeScanRoots,
                entries: LocalUsageReader.claudeEntries(modifiedSince: monthStart),
                now: now, fmt: fmt, weekStart: weekStart, monthStart: monthStart)
-        report("Codex", dir: LocalUsageReader.codexSessionsDir,
+        report("Codex", dirs: LocalUsageReader.codexScanRoots,
                entries: LocalUsageReader.codexEntries(modifiedSince: monthStart),
                now: now, fmt: fmt, weekStart: weekStart, monthStart: monthStart)
-        report("Gemini", dir: LocalUsageReader.geminiTmpDir,
+        report("Gemini", dirs: LocalUsageReader.geminiScanRoots,
                entries: LocalUsageReader.geminiEntries(modifiedSince: monthStart),
                now: now, fmt: fmt, weekStart: weekStart, monthStart: monthStart)
         // OpenCode/Hermes read local SQLite DBs — only where a SQLite module is importable
@@ -147,8 +153,14 @@ struct PTBWindowsCLI {
     /// Print one provider's today/week/month totals from its parsed entries.
     private static func report(_ name: String, dir: URL, entries: [LocalUsageReader.Entry],
                                now: Date, fmt: DateFormatter, weekStart: Date, monthStart: Date) {
-        print("\n[\(name)]  \(dir.path)")
-        guard FileManager.default.fileExists(atPath: dir.path) else {
+        report(name, dirs: [dir], entries: entries, now: now, fmt: fmt,
+               weekStart: weekStart, monthStart: monthStart)
+    }
+
+    private static func report(_ name: String, dirs: [URL], entries: [LocalUsageReader.Entry],
+                               now: Date, fmt: DateFormatter, weekStart: Date, monthStart: Date) {
+        print("\n[\(name)]  \(dirs.map(\.path).joined(separator: " + "))")
+        guard dirs.contains(where: { FileManager.default.fileExists(atPath: $0.path) }) else {
             print("  (not found — CLI not installed or unused on this machine)")
             return
         }
