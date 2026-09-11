@@ -14,6 +14,18 @@ struct PTBWindowsCLI {
         // modes are opt-in flags (each needs a console); `--report` prints the usage report that used
         // to be the default. The exe links /SUBSYSTEM:WINDOWS so the tray path never flashes a console.
         let args = CommandLine.arguments.dropFirst()
+        // Packaging must not depend on CRT console attachment in a GUI-subsystem executable.
+        // This offline probe also proves that Windows loaded every linked runtime DLL.
+        if let index = CommandLine.arguments.firstIndex(of: "--version-file") {
+            guard index + 1 < CommandLine.arguments.count else { ExitProcess(2) }
+            do {
+                try WindowsUpdate.currentVersion.write(
+                    toFile: CommandLine.arguments[index + 1], atomically: true, encoding: .utf8)
+                return
+            } catch {
+                ExitProcess(1)
+            }
+        }
         let cliFlags: Set<String> = ["--report", "--icon-test", "--update-check", "--autostart-test"]
         guard args.contains(where: cliFlags.contains) else {
             WindowsTray.run()

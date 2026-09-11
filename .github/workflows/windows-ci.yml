@@ -41,15 +41,46 @@ jobs:
         shell: pwsh
         run: swift test -v
 
+      # Packaging is validated on PRs before merge, but no PR artifact or release is published.
+      # The installer script verifies required Swift runtime DLLs and runs a clean-PATH smoke test.
+      - name: Validate Windows installer packaging
+        if: github.event_name == 'pull_request'
+        shell: pwsh
+        run: |
+          $source = Get-Content "Sources/PokeTokenBar/WindowsUpdate.swift" -Raw
+          if ($source -notmatch 'static let currentVersion = "([0-9]+\.[0-9]+\.[0-9]+)"') {
+            throw "Could not read WindowsUpdate.currentVersion"
+          }
+          $baseVersion = $Matches[1]
+
+          $candidates = @(
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw "Failed to install Inno Setup" }
+          }
+
+          ./scripts/build-win-installer.ps1 -Version $baseVersion -OutDir "dist-pr-check"
+          $installer = Join-Path $PWD "dist-pr-check\PokeTokenBar-Setup-$baseVersion.exe"
+          if (-not (Test-Path $installer)) {
+            throw "Installer validation did not produce: $installer"
+          }
+          Write-Host "Installer packaging validation passed: $installer"
+          ./scripts/test-win-installer.ps1 -Installer $installer -Version $baseVersion
+
   # Publish only after the Windows build/tests pass on the canonical windows-port branch.
-  # Keeping publication out of the PR job means PR code never receives Actions write permission.
+  # PR code never receives Actions/Contents write permission.
   publish-windows-artifact:
     name: publish-windows-artifact
     if: github.event_name == 'push' && github.ref == 'refs/heads/windows-port'
     needs: windows-build-test
     runs-on: windows-2025
     permissions:
-      contents: read
+      contents: write
       actions: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -91,6 +122,7 @@ jobs:
           if (-not $iscc) {
             Write-Host "Inno Setup not preinstalled; installing with Chocolatey."
             choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw "Failed to install Inno Setup" }
           } else {
             Write-Host "Using Inno Setup: $iscc"
           }
@@ -101,31 +133,38 @@ jobs:
           ./scripts/build-win-installer.ps1 `
             -Version "${{ steps.version.outputs.base_version }}" `
             -OutDir "dist"
+          ./scripts/test-win-installer.ps1 `
+            -Installer "dist/PokeTokenBar-Setup-${{ steps.version.outputs.base_version }}.exe" `
+            -Version "${{ steps.version.outputs.base_version }}"
 
       - name: Prepare versioned Windows installer
+        id: package
         shell: pwsh
         run: |
           $base = "${{ steps.version.outputs.base_version }}"
           $package = "${{ steps.version.outputs.package_version }}"
           $source = Join-Path $PWD "dist\PokeTokenBar-Setup-$base.exe"
-          $target = Join-Path $PWD "dist\PokeTokenBar-Setup-$package-x64.exe"
+          $targetName = "PokeTokenBar-Setup-$package-x64.exe"
+          $target = Join-Path $PWD "dist\$targetName"
           if (-not (Test-Path $source)) {
             throw "Installer was not produced: $source"
           }
           Move-Item $source $target -Force
           $hash = (Get-FileHash $target -Algorithm SHA256).Hash.ToLowerInvariant()
+          "asset_name=$targetName" >> $env:GITHUB_OUTPUT
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
           Write-Host "Installer: $target"
           Write-Host "SHA256: $hash"
 
-      - name: Upload latest Windows installer
+      - name: Upload latest Windows installer artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: PokeTokenBar-${{ steps.version.outputs.package_version }}-x64
-          path: dist/PokeTokenBar-Setup-${{ steps.version.outputs.package_version }}-x64.exe
+          path: dist/${{ steps.package.outputs.asset_name }}
           if-no-files-found: error
           retention-days: 30
 
-      - name: Keep only the latest Windows artifact
+      - name: Keep only the latest Windows Actions artifact
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -147,7 +186,7 @@ jobs:
             $page += 1
           } while ($count -eq 100)
 
-          # Clean both the old unversioned artifact name and the versioned Windows artifacts.
+          # Clean both the old unversioned artifact name and versioned Windows artifacts.
           $windowsArtifacts = @($artifacts | Where-Object {
             $_.name -eq "PokeTokenBar-windows-x64" -or
             $_.name -match '^PokeTokenBar-v[0-9]+\.[0-9]+\.[0-9]+-windows\.[0-9]+-x64$'
@@ -170,3 +209,30 @@ jobs:
           }
 
           Write-Host "Keeping only: $($current.name) [$($current.id)]"
+
+      - name: Publish Windows GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ steps.version.outputs.package_version }}
+          ASSET_NAME: ${{ steps.package.outputs.asset_name }}
+          SHA256: ${{ steps.package.outputs.sha256 }}
+        run: |
+          $asset = Join-Path $PWD "dist\$env:ASSET_NAME"
+          if (-not (Test-Path $asset)) {
+            throw "Release asset not found: $asset"
+          }
+
+          # Keep the command idempotent so a re-run can replace the asset for the same CI tag.
+          gh release view $env:TAG_NAME --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release $env:TAG_NAME already exists; replacing its installer asset."
+            gh release upload $env:TAG_NAME $asset --repo $env:GITHUB_REPOSITORY --clobber
+          } else {
+            $notes = "Windows port of PokeTokenBar based on upstream v${{ steps.version.outputs.base_version }}.`n`nWindows build: $env:TAG_NAME`nArchitecture: x64`nInstaller: $env:ASSET_NAME`nSHA256: $env:SHA256`n`nThe installer may be unsigned unless a repository signing certificate is configured. Automatic in-app installation remains disabled until client-side checksum and signer verification are implemented."
+            gh release create $env:TAG_NAME $asset --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "PokeTokenBar $env:TAG_NAME" --notes $notes
+          }
+          if ($LASTEXITCODE -ne 0) {
+            throw "GitHub Release publication failed for $env:TAG_NAME"
+          }
+          Write-Host "Published GitHub Release: $env:TAG_NAME"
