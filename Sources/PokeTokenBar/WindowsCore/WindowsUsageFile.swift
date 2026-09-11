@@ -55,7 +55,7 @@ enum WindowsUsageFile {
         let handle = path.withUnsafeBufferPointer {
             CreateFileW($0.baseAddress, DWORD(GENERIC_READ), DWORD(FILE_SHARE_READ | FILE_SHARE_WRITE),
                         nil, DWORD(OPEN_EXISTING),
-                        DWORD(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN), nil)
+                        DWORD(FILE_FLAG_SEQUENTIAL_SCAN), nil)
         }
         guard let handle, handle != INVALID_HANDLE_VALUE else { return nil }
         defer { CloseHandle(handle) }
