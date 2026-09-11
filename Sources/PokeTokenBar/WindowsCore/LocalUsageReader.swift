@@ -1,4 +1,7 @@
 import Foundation
+#if os(Windows)
+import WinSDK
+#endif
 
 /// Claude/Codex 로컬 사용 로그를 직접 파싱해 토큰/비용을 집계한다(ccusage CLI 대체).
 ///
@@ -81,12 +84,30 @@ enum LocalUsageReader {
             options: [.skipsHiddenFiles]) else { return [] }
         var out: [URL] = []
         for case let url as URL in en {
+            if isUnsafeScanURL(url) {
+                if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true { en.skipDescendants() }
+                continue
+            }
             // 기본 .jsonl. .json 은 Gemini 전용(allowJSON) — Claude 루트 .meta.json 스캔 방지.
             guard url.pathExtension == "jsonl" || (allowJSON && url.pathExtension == "json") else { continue }
             let v = try? url.resourceValues(forKeys: [.contentModificationDateKey])
             if let m = v?.contentModificationDate, m >= modifiedSince { out.append(url) }
         }
         return out
+    }
+
+    /// User-selected WSL roots must not follow links or Windows reparse points. A
+    /// link inside a log directory could otherwise redirect the recursive scan into
+    /// another Linux tree or a Windows path mounted at `/mnt/c`.
+    static func isUnsafeScanURL(_ url: URL) -> Bool {
+        guard let values = try? url.resourceValues(forKeys: [.isSymbolicLinkKey]) else { return true }
+        if values.isSymbolicLink == true { return true }
+#if os(Windows)
+        var path = Array(url.path.utf16) + [0]
+        let attrs = path.withUnsafeMutableBufferPointer { GetFileAttributesW($0.baseAddress) }
+        if attrs != INVALID_FILE_ATTRIBUTES && (attrs & DWORD(FILE_ATTRIBUTE_REPARSE_POINT)) != 0 { return true }
+#endif
+        return false
     }
 
     // MARK: Claude 파싱
