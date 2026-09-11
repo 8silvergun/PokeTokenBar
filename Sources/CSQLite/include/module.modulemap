@@ -1,0 +1,7 @@
+// Windows Swift does not ship the system SQLite3 module used by macOS.
+// Expose the vendored public-domain amalgamation under the same module name
+// so the current Core sources can keep using `import SQLite3` unchanged.
+module SQLite3 {
+    header "sqlite3.h"
+    export *
+}
