@@ -113,6 +113,7 @@ actor LocalUsageCache {
                          allowJSON: Bool = false,
                          parse: (URL) -> [LocalUsageReader.Entry]) -> [LocalUsageReader.Entry] {
         let fm = FileManager.default
+        guard !LocalUsageReader.isUnsafeScanURL(root) else { return [] }
         guard let en = fm.enumerator(
             at: root,
             includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey, .isDirectoryKey, .isSymbolicLinkKey],
