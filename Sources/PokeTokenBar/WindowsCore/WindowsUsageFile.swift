@@ -41,7 +41,7 @@ enum WindowsUsageFile {
     static func isUnsafe(_ url: URL) -> Bool {
         guard url.isFileURL, let paths = pathPrefixes(url.path), !paths.isEmpty else { return true }
         return paths.contains { path in
-            let wide = Array(path.utf16) + [0]
+            let wide = win32Path(path)
             let attributes = wide.withUnsafeBufferPointer { GetFileAttributesW($0.baseAddress) }
             // Unreadable/disappearing metadata must not be mistaken for a safe file.
             return attributes == INVALID_FILE_ATTRIBUTES ||
@@ -51,7 +51,7 @@ enum WindowsUsageFile {
 
     static func read(_ url: URL, maxBytes: Int = maxLogBytes) -> Data? {
         guard maxBytes >= 0, maxBytes <= maxLogBytes, !isUnsafe(url) else { return nil }
-        let path = Array(url.path.utf16) + [0]
+        let path = win32Path(url.path)
         let handle = path.withUnsafeBufferPointer {
             CreateFileW($0.baseAddress, DWORD(GENERIC_READ), DWORD(FILE_SHARE_READ | FILE_SHARE_WRITE),
                         nil, DWORD(OPEN_EXISTING),
@@ -96,7 +96,7 @@ enum WindowsUsageFile {
     }
 
     private static func longPath(_ path: String) -> String? {
-        let source = Array(path.utf16) + [0]
+        let source = win32Path(path)
         var buffer = [WCHAR](repeating: 0, count: 32768)
         let count = source.withUnsafeBufferPointer { input in
             buffer.withUnsafeMutableBufferPointer { output in
@@ -112,6 +112,14 @@ enum WindowsUsageFile {
         if windows.hasPrefix("\\\\?\\UNC\\") { return "\\\\" + windows.dropFirst(8) }
         if windows.hasPrefix("\\\\?\\") { return String(windows.dropFirst(4)) }
         return windows
+    }
+
+    /// Apply the extended namespace only after component validation. Deep Claude
+    /// project directories can exceed MAX_PATH even with perfectly ordinary names.
+    private static func win32Path(_ path: String) -> [WCHAR] {
+        let normal = comparablePath(path)
+        let extended = normal.hasPrefix("\\\\") ? "\\\\?\\UNC\\" + normal.dropFirst(2) : "\\\\?\\" + normal
+        return Array(extended.utf16) + [0]
     }
 }
 #endif

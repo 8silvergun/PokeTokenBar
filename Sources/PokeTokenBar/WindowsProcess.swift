@@ -167,10 +167,13 @@ final class WindowsProcess {
         defer { storage.deallocate() }
         let attributes = OpaquePointer(storage)
         guard InitializeProcThreadAttributeList(attributes, 1, 0, &size) else { return nil }
-        defer { DeleteProcThreadAttributeList(attributes) }
         var handles: [HANDLE?] = [input, output, error]
         return handles.withUnsafeMutableBytes { handleBytes in
-            guard UpdateProcThreadAttribute(attributes, 0, DWORD_PTR(PROC_THREAD_ATTRIBUTE_HANDLE_LIST),
+            defer { DeleteProcThreadAttributeList(attributes) }
+            // WinSDK's function-like ProcThreadAttributeValue macro is unavailable
+            // in Swift: HandleList (2) | PROC_THREAD_ATTRIBUTE_INPUT (0x00020000).
+            let handleListAttribute = DWORD_PTR(0x00020002)
+            guard UpdateProcThreadAttribute(attributes, 0, handleListAttribute,
                                             handleBytes.baseAddress, SIZE_T(handleBytes.count), nil, nil)
             else { return nil }
             var si = STARTUPINFOEXW()

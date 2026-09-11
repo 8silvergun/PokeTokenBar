@@ -75,6 +75,40 @@ final class WSLSecurityTests: XCTestCase {
         XCTAssertTrue(result.stdout.isEmpty)
     }
 
+    func testFileBackedProcessAndRepeatedCleanup() throws {
+        let root = try temporaryDirectory()
+        let executable = try XCTUnwrap(WindowsProcess.systemExecutable("where.exe"))
+        let output = root.appendingPathComponent("stdout.txt")
+        let error = root.appendingPathComponent("stderr.txt")
+        let command = [executable, "cmd.exe"].map(WindowsProcess.quoteArgument).joined(separator: " ")
+        let process = try XCTUnwrap(WindowsProcess(commandLine: command, stdoutPath: output.path,
+                                                  stderrPath: error.path, createNewOutputFiles: true))
+        process.closeStdin()
+        let exited = process.waitFor(8)
+        if !exited { process.terminate(); _ = process.waitFor(1) }
+        XCTAssertTrue(exited)
+        XCTAssertEqual(process.exitCode, 0)
+        process.cleanup()
+        process.cleanup()
+        XCTAssertFalse(try Data(contentsOf: output).isEmpty)
+        XCTAssertNoThrow(try FileManager.default.removeItem(at: output))
+    }
+
+    func testCreateNewCollisionPreservesFilesAndClosesPartialSetup() throws {
+        let root = try temporaryDirectory()
+        let output = root.appendingPathComponent("stdout.txt")
+        let error = root.appendingPathComponent("existing-stderr.txt")
+        let sentinel = Data("must remain unchanged".utf8)
+        try sentinel.write(to: error)
+        let process = WindowsProcess(commandLine: "unused.exe", stdoutPath: output.path,
+                                     stderrPath: error.path, createNewOutputFiles: true)
+        XCTAssertNil(process)
+        XCTAssertEqual(try Data(contentsOf: error), sentinel)
+        // The first file opened successfully before stderr failed. Without closing
+        // that handle, Windows denies this deletion because it was not shared for delete.
+        XCTAssertNoThrow(try FileManager.default.removeItem(at: output))
+    }
+
     func testUNCAncestorsStayWithinTheShare() {
         XCTAssertEqual(WindowsUsageFile.pathPrefixes("\\\\wsl.localhost\\Ubuntu\\home\\user\\.codex\\sessions"), [
             "\\\\wsl.localhost\\Ubuntu\\home", "\\\\wsl.localhost\\Ubuntu\\home\\user",
