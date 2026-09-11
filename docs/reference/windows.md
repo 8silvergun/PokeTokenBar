@@ -12,6 +12,10 @@ WindowsCore 호환 코드 기반이므로 최신 macOS 기능과 완전히 동�
 4. 시작 메뉴에서 PokeTokenBar를 실행합니다. 작업 표시줄의 숨겨진 아이콘 영역도 확인합니다.
 5. 트레이 아이콘을 눌러 사용량과 캐릭터를 확인하고, 설정에서 로그인 시 자동 시작을 선택할 수 있습니다.
 
+실행 중에도 `설정 → WSL 배포판`에서 `Windows files only` 또는 설치된 WSL 배포판을
+선택할 수 있습니다. 선택 즉시 `%APPDATA%\PokeTokenBar\wsl-distro.txt`가 갱신되고
+사용량 새로고침이 예약됩니다.
+
 설치 위치: `%LOCALAPPDATA%\Programs\PokeTokenBar`.
 앱 제거는 Windows 설정의 설치된 앱 목록에서 수행합니다. 개인 상태 데이터는 자동 삭제하지 않습니다.
 서명되지 않은 빌드는 Windows 경고가 표시될 수 있습니다. 보안 기능을 끄지 말고 출처와 릴리스
@@ -20,7 +24,7 @@ SHA-256을 확인하십시오. 앱 내 자동 다운로드·설치는 안전성 
 ## 사용량 데이터
 
 기본적으로 현재 Windows 사용자의 `.claude/projects`, `.codex/sessions`, `.gemini/tmp`를 읽습니다.
-설치 중 WSL 배포판을 선택하면 해당 배포판에서 `$HOME`을 조회한 뒤
+설치 중 또는 실행 중 설정에서 WSL 배포판을 선택하면 해당 배포판에서 `$HOME`을 조회한 뒤
 `\\wsl.localhost\<배포판>\<Linux home>\.claude\projects` (및 Codex/Gemini 대응 경로)를
 추가로 읽습니다. 따라서 배포판마다 Linux 사용자가 다르거나 `/home` 밖에 홈을 둔 경우에도
 선택한 배포판의 실제 홈을 사용합니다. WSL이 중지되었거나 삭제된 경우에는 Windows 로그만
