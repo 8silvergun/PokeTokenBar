@@ -13,11 +13,15 @@ New-Item -ItemType Directory -Path $testRoot | Out-Null
 $oldPath = $env:PATH
 $oldState = $env:PTB_STATE_DIR
 $tray = $null
-function Invoke-CheckedProcess([string]$File, [string[]]$Arguments, [int]$Timeout = 60000) {
+$primaryFailure = $null
+$cleanupFailure = $null
+function Invoke-CheckedProcess([string]$File, [string[]]$Arguments, [int]$Timeout = 180000) {
+  Write-Host "Starting: $File (timeout ${Timeout}ms)"
   $process = Start-Process -FilePath $File -ArgumentList $Arguments -PassThru
   try {
     if (-not $process.WaitForExit($Timeout)) {
-      $process.Kill()
+      $process.Kill($true)
+      $process.WaitForExit()
       throw "Process timed out: $File"
     }
     if ($process.ExitCode -ne 0) { throw "Process failed ($($process.ExitCode)): $File" }
@@ -42,7 +46,11 @@ try {
   # A second launch should exit rather than create a second tray instance.
   Invoke-CheckedProcess $exe @('--tray') 15000
   Write-Host 'Installed application: clean-PATH version, tray lifetime and single-instance probes passed.'
+} catch {
+  $primaryFailure = $_
+  Write-Host "Primary failure: $($_.Exception.Message)"
 } finally {
+  try {
   if ($tray) {
     if (-not $tray.HasExited) { $tray.Kill(); $tray.WaitForExit() }
     $tray.Dispose()
@@ -51,10 +59,27 @@ try {
   $env:PTB_STATE_DIR = $oldState
   $uninstaller = Join-Path $installDir 'unins000.exe'
   if (Test-Path -LiteralPath $uninstaller) {
-    Invoke-CheckedProcess $uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')
+    Invoke-CheckedProcess $uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$testRoot\uninstall.log`"")
     if (Test-Path -LiteralPath (Join-Path $installDir 'PokeTokenBar.exe')) {
       throw 'Uninstall left the application executable behind'
     }
   }
+  } catch {
+    $cleanupFailure = $_
+    Write-Host "Cleanup failure: $($_.Exception.Message)"
+  } finally {
+    $env:PATH = $oldPath
+    $env:PTB_STATE_DIR = $oldState
+  }
+  foreach ($log in @('install.log', 'uninstall.log')) {
+    $logPath = Join-Path $testRoot $log
+    if (Test-Path -LiteralPath $logPath) {
+      Write-Host "::group::$log"
+      Get-Content -LiteralPath $logPath -Tail 100
+      Write-Host '::endgroup::'
+    }
+  }
   Write-Host "Integration-test logs retained at: $testRoot"
 }
+if ($primaryFailure) { throw $primaryFailure }
+if ($cleanupFailure) { throw $cleanupFailure }

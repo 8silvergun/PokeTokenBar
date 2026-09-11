@@ -31,11 +31,20 @@ if (-not (Test-Path $exe)) {
 # active directories instead of guessing a particular local/hosted installation layout.
 $swiftExe = (Get-Command swift.exe -ErrorAction Stop).Source
 $toolchainBin = Split-Path $swiftExe -Parent
+# Both setup-swift and the official installer place Toolchains and Runtimes under one root.
+$toolchainsMarker = '\Toolchains\'
+$markerIndex = $swiftExe.IndexOf($toolchainsMarker, [StringComparison]::OrdinalIgnoreCase)
+if ($markerIndex -lt 0) { throw "Unsupported Swift installation layout: $swiftExe" }
+$swiftRoot = $swiftExe.Substring(0, $markerIndex)
+$swiftPrefix = $swiftRoot.TrimEnd('\') + '\'
 $candidateDirs = New-Object System.Collections.Generic.List[string]
 
 function Add-CandidateDir([string]$Path) {
   if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return }
   $resolved = (Resolve-Path -LiteralPath $Path -ErrorAction SilentlyContinue).Path
+  if (-not $resolved -or -not $resolved.StartsWith($swiftPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    return # Never copy DLLs from System32, PHP, or a different Swift installation.
+  }
   if ($resolved -and -not $candidateDirs.Contains($resolved)) {
     $candidateDirs.Add($resolved)
   }
@@ -65,7 +74,7 @@ foreach ($dir in $pathDirs) {
 
 # Also support the official local Swift installer layout even when its Runtime/bin is not currently
 # present in PATH.
-$localRuntimeRoot = Join-Path $env:LOCALAPPDATA "Programs\Swift\Runtimes"
+$localRuntimeRoot = Join-Path $swiftRoot "Runtimes"
 if (Test-Path -LiteralPath $localRuntimeRoot) {
   Get-ChildItem -LiteralPath $localRuntimeRoot -Directory -ErrorAction SilentlyContinue |
     Sort-Object Name -Descending |
@@ -87,22 +96,14 @@ if (-not $runtimeDir) {
     Select-Object -First 1
 }
 
-# Last-resort bounded discovery near the active swift.exe. This is intentionally secondary to PATH
-# discovery because hosted setup-swift layouts do not necessarily contain a \Toolchains\ segment.
+# Fallback discovery stays inside the selected Swift installation.
 if (-not $runtimeDir) {
-  $searchRoot = Split-Path $toolchainBin -Parent
-  for ($i = 0; $i -lt 5 -and $searchRoot; $i++) {
-    Write-Host "Searching for FoundationNetworking.dll under: $searchRoot"
-    $found = Get-ChildItem -LiteralPath $searchRoot -Filter "FoundationNetworking.dll" -File -Recurse -ErrorAction SilentlyContinue |
-      Select-Object -First 1
-    if ($found) {
-      $runtimeDir = $found.DirectoryName
-      Add-CandidateDir $runtimeDir
-      break
-    }
-    $parent = Split-Path $searchRoot -Parent
-    if (-not $parent -or $parent -eq $searchRoot) { break }
-    $searchRoot = $parent
+  Write-Host "Searching for FoundationNetworking.dll under: $swiftRoot"
+  $found = Get-ChildItem -LiteralPath $swiftRoot -Filter "FoundationNetworking.dll" -File -Recurse -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+  if ($found) {
+    $runtimeDir = $found.DirectoryName
+    Add-CandidateDir $runtimeDir
   }
 }
 
@@ -133,11 +134,19 @@ $runtimeDlls | Copy-Item -Destination $stage -Force
 foreach ($dir in $candidateDirs) {
   if ($dir -eq $runtimeDir) { continue }
   foreach ($dll in @(Get-ChildItem -LiteralPath $dir -Filter "*.dll" -File -ErrorAction SilentlyContinue)) {
+    # Toolchain directories also contain compiler/IDE DLLs; those are not application runtimes.
+    if ($dll.Name -notmatch '^(BlocksRuntime|dispatch|icu[^\\]*|libcurl[^\\]*|libxml2[^\\]*|libssl[^\\]*|libcrypto[^\\]*|zlib[^\\]*)\.dll$') { continue }
     $target = Join-Path $stage $dll.Name
     if (-not (Test-Path -LiteralPath $target)) {
       Copy-Item -LiteralPath $dll.FullName -Destination $target
     }
   }
+}
+
+$stagedDlls = @(Get-ChildItem -LiteralPath $stage -Filter '*.dll' -File)
+Write-Host "Staged DLL count: $($stagedDlls.Count); bytes: $(($stagedDlls | Measure-Object Length -Sum).Sum)"
+if (Test-Path -LiteralPath (Join-Path $stage 'kernel32.dll')) {
+  throw 'Packaging regression: Windows system DLLs must not be bundled.'
 }
 
 # VC++ runtime is normally present on supported Windows machines, but bundle the common DLLs when the
