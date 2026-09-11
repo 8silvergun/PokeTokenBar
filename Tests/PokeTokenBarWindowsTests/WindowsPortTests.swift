@@ -86,6 +86,8 @@ final class WindowsPortTests: XCTestCase {
             "\\\\wsl.localhost\\Ubuntu 24.04\\home\\nana")
         XCTAssertNil(WSLUsage.uncBasePath(distribution: "Ubuntu/../Windows", linuxHome: "/home/nana"))
         XCTAssertNil(WSLUsage.uncBasePath(distribution: "Ubuntu", linuxHome: "C:\\Users\\nana"))
+        XCTAssertNil(WSLUsage.uncBasePath(distribution: "Ubuntu", linuxHome: "/home/nana/../../mnt/c/Users/nana"))
+        XCTAssertNil(WSLUsage.uncBasePath(distribution: "Ubuntu\u{0000}", linuxHome: "/home/nana"))
     }
 
     func testWSLConfigurationFileNameIsStable() {
