@@ -99,7 +99,7 @@ enum WSLUsage {
             return nil
         }
         let windowsHome = home.replacingOccurrences(of: "/", with: "\\")
-        return "\\\\wsl.localhost\\(distribution)\(windowsHome)"
+        return "\\\\wsl.localhost\\\(distribution)\(windowsHome)"
     }
 
     /// Resolve the actual Linux `$HOME`; it is not safe to assume `/home/<name>` because
