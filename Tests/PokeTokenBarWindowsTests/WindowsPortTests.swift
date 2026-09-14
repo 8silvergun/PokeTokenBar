@@ -80,6 +80,16 @@ final class WindowsPortTests: XCTestCase {
         XCTAssertLessThanOrEqual(SpriteStore.maxPayloadBytes, 8 * 1024 * 1024)
     }
 
+    func testWindowsImageDecoderResourceLimits() {
+        XCTAssertTrue(WindowsImaging.dimensionsAreSafe(width: 128, height: 128))
+        XCTAssertTrue(WindowsImaging.dimensionsAreSafe(width: 512, height: 512))
+        XCTAssertFalse(WindowsImaging.dimensionsAreSafe(width: 513, height: 1))
+        XCTAssertFalse(WindowsImaging.dimensionsAreSafe(width: 1, height: 513))
+        XCTAssertFalse(WindowsImaging.dimensionsAreSafe(width: 0, height: 128))
+        XCTAssertEqual(WindowsImaging.maxGIFFrames, 60)
+        XCTAssertEqual(WindowsImaging.maxEncodedBytes, 8 * 1024 * 1024)
+    }
+
     func testWSLPathUsesSelectedDistributionAndLinuxHome() {
         XCTAssertEqual(
             WSLUsage.uncBasePath(distribution: "Ubuntu 24.04", linuxHome: "/home/nana"),
