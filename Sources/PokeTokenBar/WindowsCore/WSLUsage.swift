@@ -204,8 +204,7 @@ enum WSLUsage {
 
     private static func runWSL(_ arguments: [String], allowUTF16: Bool = false,
                                timeout: Double = 8) -> String? {
-        guard let executable = WindowsProcess.systemExecutable("wsl.exe") else { return nil }
-        let result = WindowsProcess.capture(executable: executable, arguments: arguments, timeout: timeout)
+        let result = WSLProcessProxy.capture(arguments: arguments, timeout: timeout)
         guard result.failure == nil, result.exitCode == 0, !result.stdout.isEmpty else { return nil }
         return decodeProcessOutput(result.stdout, allowUTF16: allowUTF16)
     }
