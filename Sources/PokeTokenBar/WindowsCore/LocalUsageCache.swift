@@ -72,7 +72,8 @@ actor LocalUsageCache {
         let roots = claudeRoots ?? (claudeRoot.map { [$0] } ?? LocalUsageReader.claudeScanRoots)
         var all: [LocalUsageReader.Entry] = []
         for root in roots {
-            all.append(contentsOf: collect(root: root, since: modifiedSince, cache: &claudeCache) {
+            all.append(contentsOf: collect(root: root, since: modifiedSince, cache: &claudeCache,
+                                           nativeWSLScan: true) {
                 LocalUsageReader.parseClaudeFile($0, fmt: fmt)
             })
         }
@@ -110,10 +111,28 @@ actor LocalUsageCache {
     }
 
     private func collect(root: URL, since: Date, cache: inout [String: Blob],
-                         allowJSON: Bool = false,
+                         allowJSON: Bool = false, nativeWSLScan: Bool = false,
                          parse: (URL) -> [LocalUsageReader.Entry]) -> [LocalUsageReader.Entry] {
-        let fm = FileManager.default
         guard !LocalUsageReader.isUnsafeScanURL(root) else { return [] }
+
+        if nativeWSLScan, WindowsUsageFile.isWSLUNCPath(root.path) {
+            var result: [LocalUsageReader.Entry] = []
+            for file in WindowsUsageFile.nativeJSONLFiles(in: root, modifiedSince: since,
+                                                           allowJSON: allowJSON) {
+                let key = file.url.path
+                if let blob = cache[key], blob.mtime == file.modificationDate, blob.size == file.size {
+                    result.append(contentsOf: blob.entries)
+                } else {
+                    let entries = parse(file.url)
+                    cache[key] = Blob(mtime: file.modificationDate, size: file.size, entries: entries)
+                    dirty = true
+                    result.append(contentsOf: entries)
+                }
+            }
+            return result
+        }
+
+        let fm = FileManager.default
         guard let en = fm.enumerator(
             at: root,
             includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey, .isDirectoryKey, .isSymbolicLinkKey],
