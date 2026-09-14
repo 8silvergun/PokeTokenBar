@@ -28,6 +28,17 @@ actor PokeAPIClient: PokeProviding {
     private var speciesCache: [Int: SpeciesDTO] = [:]
     private var lineCache: [Int: EvoLine] = [:]   // 프리패칭 → 부화 순간 네트워크 0
 
+    /// Windows corelibs Foundation의 `URLSession.shared`는 companion prefetch와 Claude OAuth 한도
+    /// 요청이 겹칠 때 내부 상태가 불안정했던 실측이 있다. PokéAPI는 전용 세션으로 격리하고 Windows에서는
+    /// host당 연결을 1개로 제한해 부화 관련 REST/GraphQL 요청이 폭주하지 않게 한다.
+    private let session: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        #if os(Windows)
+        configuration.httpMaximumConnectionsPerHost = 1
+        #endif
+        return URLSession(configuration: configuration)
+    }()
+
     func line(baseSpeciesID: Int) async throws -> EvoLine {
         if let cached = lineCache[baseSpeciesID] { return cached }
         let baseSpecies = try await species(baseSpeciesID)
@@ -94,14 +105,20 @@ actor PokeAPIClient: PokeProviding {
                 baseIndexCache = disk.entries
                 return disk.entries
             }
-            // GraphQL 다운 + 캐시 없음 → REST 로 인덱스를 백그라운드 구축(세션 1회).
-            // 이번 부화는 per-hatch REST 폴백(chooseBaseViaREST)이 즉시 처리하고,
-            // 구축이 끝나면 디스크 캐시로 남아 이후 선택이 가중·수집반영·오프라인가능으로 복귀한다.
+            // GraphQL 다운 + 캐시 없음 → macOS는 REST 인덱스를 백그라운드 구축한다. Windows에서는
+            // per-hatch REST 폴백과 동시에 6개씩 추가 요청을 띄우면 corelibs URLSession 불안정성을
+            // 다시 자극하므로 대량 백그라운드 구축을 생략한다. 현재 부화는 아래 caller의
+            // chooseBaseViaREST가 즉시 처리하고, GraphQL이 복구되면 정상 캐시 경로로 돌아온다.
+            #if os(Windows)
+            restBuildTried = true
+            AppLog.write("base index (GraphQL) failed, no cache — Windows uses per-hatch REST fallback only: \(error)")
+            #else
             if !restBuildTried {
                 restBuildTried = true
                 Task { await self.buildBaseIndexViaREST() }
             }
             AppLog.write("base index (GraphQL) failed, no cache — REST build triggered; per-hatch fallback handles now: \(error)")
+            #endif
             throw error
         }
     }
@@ -115,7 +132,11 @@ actor PokeAPIClient: PokeProviding {
         defer { restBuildInFlight = false }
         AppLog.write("base index: building via REST (GraphQL unavailable)…")
         var bases: [BaseSpecies] = []
+        #if os(Windows)
+        let batchSize = 1
+        #else
         let batchSize = 6
+        #endif
         var start = 1
         let maxID = 649   // Gen-V 애니메이션 스프라이트 상한 (fetchBaseIndex GraphQL 쿼리와 동일 범위)
         while start <= maxID {
@@ -152,8 +173,12 @@ actor PokeAPIClient: PokeProviding {
         // 메타몽(#132)은 위장 리빌 전용 → 일반 부화 풀에서 제외(_neq).
         let query = "{ pokemonspecies(where: {evolves_from_species_id: {_is_null: true}, id: {_lte: 649, _neq: \(PokemonOdds.dittoSpeciesID)}}, order_by: {id: asc}) { id capture_rate } }"
         req.httpBody = try JSONSerialization.data(withJSONObject: ["query": query])
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            AppLog.write("pokeapi GraphQL failed http=\(status)")
+            throw URLError(.badServerResponse)
+        }
         let decoded = try JSONDecoder().decode(GraphQLBaseResponse.self, from: data)
         let entries = decoded.data.pokemonspecies.map { BaseSpecies(id: $0.id, captureRate: $0.capture_rate) }
         guard !entries.isEmpty else { throw URLError(.cannotParseResponse) }
@@ -179,8 +204,18 @@ actor PokeAPIClient: PokeProviding {
     private func get<T: Decodable>(_ url: URL) async throws -> T {
         var req = URLRequest(url: url)
         req.timeoutInterval = 15
-        let (data, _) = try await URLSession.shared.data(for: req)
-        return try JSONDecoder().decode(T.self, from: data)
+        let (data, response) = try await session.data(for: req)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            AppLog.write("pokeapi GET failed path=\(url.path) http=\(status)")
+            throw URLError(.badServerResponse)
+        }
+        do {
+            return try JSONDecoder().decode(T.self, from: data)
+        } catch {
+            AppLog.write("pokeapi decode failed path=\(url.path): \(error)")
+            throw error
+        }
     }
 
     private func node(from link: ChainLink) -> EvoNode {
