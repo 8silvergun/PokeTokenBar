@@ -46,8 +46,16 @@ enum WSLUsage {
     }
 
     static var installedDistributions: [String] {
+        let selected = selectedDistribution
         distributionLock.lock()
-        let result = cachedDistributions
+        var result = cachedDistributions
+        // Keep the persisted selection visible even before an asynchronous `wsl --list`
+        // refresh completes. Also remember it in memory so switching temporarily to
+        // "Windows files only" does not make the distro disappear from the dropdown.
+        if let selected, !result.contains(selected) {
+            result.insert(selected, at: 0)
+            cachedDistributions = result
+        }
         distributionLock.unlock()
         return result
     }
@@ -55,7 +63,7 @@ enum WSLUsage {
     /// Refreshes the cached distro list off the tray paint path. `wsl.exe` can take
     /// seconds to start when WSL is cold, so this must never run during WM_PAINT.
     static func refreshInstalledDistributions() {
-        guard let output = runWSL(["--list", "--quiet"], allowUTF16: true) else { return }
+        guard let output = runWSL(["--list", "--quiet"], allowUTF16: true, timeout: 20) else { return }
         let values = output
             .replacingOccurrences(of: "\r", with: "\n")
             .split(separator: "\n")
@@ -69,18 +77,24 @@ enum WSLUsage {
         distributionLock.lock()
         var unique: [String] = []
         for value in values where !unique.contains(value) { unique.append(value) }
+        if let selected = selectedDistribution, !unique.contains(selected) { unique.append(selected) }
         cachedDistributions = unique
         distributionLock.unlock()
     }
 
     @discardableResult
     static func setSelectedDistribution(_ distribution: String?) -> Bool {
+        let previous = selectedDistribution
         let value = distribution?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard value.isEmpty || isSafeDistributionName(value) else { return false }
         do {
             try FileManager.default.createDirectory(at: configurationURL.deletingLastPathComponent(),
                                                      withIntermediateDirectories: true)
             try value.write(to: configurationURL, atomically: true, encoding: .utf8)
+            distributionLock.lock()
+            if let previous, !cachedDistributions.contains(previous) { cachedDistributions.append(previous) }
+            if !value.isEmpty, !cachedDistributions.contains(value) { cachedDistributions.append(value) }
+            distributionLock.unlock()
             invalidateCache()
             return true
         } catch {
@@ -89,8 +103,8 @@ enum WSLUsage {
     }
 
     /// Returns the WSL log root for one provider. The returned URL is a Windows UNC
-    /// path, so Foundation's normal directory enumerator can scan it without copying
-    /// logs out of the Linux filesystem.
+    /// path, so Windows-specific discovery can scan it without copying logs out of the
+    /// Linux filesystem.
     static func root(for provider: Provider) -> URL? {
         guard let base = resolvedBaseRoot() else { return nil }
         switch provider {
@@ -153,7 +167,7 @@ enum WSLUsage {
         guard let output = runWSL([
             "--distribution", distribution,
             "--exec", "/usr/bin/printenv", "HOME",
-        ]) else { return nil }
+        ], timeout: 20) else { return nil }
         // Remove only printenv's single record terminator, not arbitrary whitespace
         // supplied as part of HOME (which could conceal a malformed path).
         var home = output
@@ -188,9 +202,10 @@ enum WSLUsage {
         return true
     }
 
-    private static func runWSL(_ arguments: [String], allowUTF16: Bool = false) -> String? {
+    private static func runWSL(_ arguments: [String], allowUTF16: Bool = false,
+                               timeout: Double = 8) -> String? {
         guard let executable = WindowsProcess.systemExecutable("wsl.exe") else { return nil }
-        let result = WindowsProcess.capture(executable: executable, arguments: arguments)
+        let result = WindowsProcess.capture(executable: executable, arguments: arguments, timeout: timeout)
         guard result.failure == nil, result.exitCode == 0, !result.stdout.isEmpty else { return nil }
         return decodeProcessOutput(result.stdout, allowUTF16: allowUTF16)
     }
