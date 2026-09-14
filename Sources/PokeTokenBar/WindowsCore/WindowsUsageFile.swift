@@ -5,6 +5,12 @@ import WinSDK
 /// Defensive reads of user-selected log trees. This is not a sandbox for an
 /// adversarial WSL filesystem; provider metadata and the local account are trusted.
 enum WindowsUsageFile {
+    struct ScannedFile {
+        let url: URL
+        let modificationDate: Date
+        let size: Int
+    }
+
     // A changing/appending file is read only up to its initial length. Very large
     // sessions are skipped, never silently parsed as a truncated whole JSON file.
     static let maxLogBytes = 256 * 1024 * 1024
@@ -47,6 +53,58 @@ enum WindowsUsageFile {
             return attributes == INVALID_FILE_ATTRIBUTES ||
                 (attributes & DWORD(FILE_ATTRIBUTE_REPARSE_POINT)) != 0
         }
+    }
+
+    /// Recursively enumerate JSONL files with Win32 APIs. Foundation's directory
+    /// enumerator can return an empty sequence for WSL's `\\wsl.localhost` provider
+    /// even when the same path is readable from PowerShell. Keep this walker narrow:
+    /// it validates every path component and never follows reparse points.
+    static func nativeJSONLFiles(in root: URL, modifiedSince: Date,
+                                 allowJSON: Bool = false) -> [ScannedFile] {
+        guard root.isFileURL, !isUnsafe(root) else { return [] }
+        var stack = [comparablePath(root.path)]
+        var result: [ScannedFile] = []
+
+        while let directory = stack.popLast() {
+            let patternPath = directory + (directory.hasSuffix("\\") ? "*" : "\\*")
+            let pattern = win32Path(patternPath)
+            var data = WIN32_FIND_DATAW()
+            let first = pattern.withUnsafeBufferPointer {
+                FindFirstFileW($0.baseAddress, &data)
+            }
+            guard let handle = first, handle != INVALID_HANDLE_VALUE else { continue }
+
+            repeat {
+                let name = fileName(from: &data)
+                if name == "." || name == ".." { continue }
+                guard WSLUsage.isSafePathComponent(name) else { continue }
+
+                let attributes = data.dwFileAttributes
+                if (attributes & DWORD(FILE_ATTRIBUTE_REPARSE_POINT)) != 0 { continue }
+
+                let childPath = directory + (directory.hasSuffix("\\") ? "" : "\\") + name
+                if (attributes & DWORD(FILE_ATTRIBUTE_DIRECTORY)) != 0 {
+                    stack.append(childPath)
+                    continue
+                }
+
+                let lower = name.lowercased()
+                guard lower.hasSuffix(".jsonl") || (allowJSON && lower.hasSuffix(".json")) else { continue }
+                let mtime = date(from: data.ftLastWriteTime)
+                guard mtime >= modifiedSince else { continue }
+
+                let size64 = (UInt64(data.nFileSizeHigh) << 32) | UInt64(data.nFileSizeLow)
+                guard size64 <= UInt64(Int.max) else { continue }
+                result.append(ScannedFile(
+                    url: URL(fileURLWithPath: childPath),
+                    modificationDate: mtime,
+                    size: Int(size64)))
+            } while FindNextFileW(handle, &data) != 0
+
+            _ = FindClose(handle)
+        }
+
+        return result
     }
 
     static func read(_ url: URL, maxBytes: Int = maxLogBytes) -> Data? {
@@ -120,6 +178,20 @@ enum WindowsUsageFile {
             return isWSLUNCPath(path) ? comparablePath(path) : nil
         }
         return String(decoding: buffer.prefix(Int(count)), as: UTF16.self)
+    }
+
+    private static func fileName(from data: inout WIN32_FIND_DATAW) -> String {
+        withUnsafePointer(to: &data.cFileName) { pointer in
+            pointer.withMemoryRebound(to: WCHAR.self, capacity: Int(MAX_PATH)) {
+                String(decodingCString: $0, as: UTF16.self)
+            }
+        }
+    }
+
+    private static func date(from value: FILETIME) -> Date {
+        let ticks = (UInt64(value.dwHighDateTime) << 32) | UInt64(value.dwLowDateTime)
+        let unixSeconds = Double(ticks) / 10_000_000.0 - 11_644_473_600.0
+        return Date(timeIntervalSince1970: unixSeconds)
     }
 
     private static func comparablePath(_ path: String) -> String {
