@@ -5,7 +5,7 @@ import WinSDK
 /// Windows console entry point — Windows-port milestones ("functionality first").
 ///
 /// Exercises the portable core on Windows without any AppKit/SwiftUI/Keychain:
-///  - Claude / Codex / Gemini usage via `LocalUsageReader` (file parsing, cross-platform).
+///  - Claude / Codex / Gemini usage via the same local usage paths used by the app.
 ///  - Codex rate limits via `CodexRateLimitsProvider` (spawns the `codex` CLI; nil if absent).
 @main
 struct PTBWindowsCLI {
@@ -71,8 +71,12 @@ struct PTBWindowsCLI {
         }
         print(String(repeating: "=", count: 52))
 
+        // Keep Claude diagnostics on the same cache/native WSL discovery path as the tray UI.
+        // Calling LocalUsageReader directly here would fall back to Foundation enumeration and can
+        // incorrectly report zero entries for \\wsl.localhost even while the GUI is showing usage.
+        let claudeEntries = await LocalUsageCache.shared.claudeEntries(modifiedSince: monthStart)
         report("Claude", dirs: LocalUsageReader.claudeScanRoots,
-               entries: LocalUsageReader.claudeEntries(modifiedSince: monthStart),
+               entries: claudeEntries,
                now: now, fmt: fmt, weekStart: weekStart, monthStart: monthStart)
         report("Codex", dirs: LocalUsageReader.codexScanRoots,
                entries: LocalUsageReader.codexEntries(modifiedSince: monthStart),
@@ -160,7 +164,7 @@ struct PTBWindowsCLI {
     private static func report(_ name: String, dirs: [URL], entries: [LocalUsageReader.Entry],
                                now: Date, fmt: DateFormatter, weekStart: Date, monthStart: Date) {
         print("\n[\(name)]  \(dirs.map(\.path).joined(separator: " + "))")
-        guard dirs.contains(where: { FileManager.default.fileExists(atPath: $0.path) }) else {
+        guard !entries.isEmpty || dirs.contains(where: { FileManager.default.fileExists(atPath: $0.path) }) else {
             print("  (not found — CLI not installed or unused on this machine)")
             return
         }
