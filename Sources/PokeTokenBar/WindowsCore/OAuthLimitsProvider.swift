@@ -27,6 +27,7 @@ protocol ClaudeLimitsProviding: Sendable {
 
 /// 공식 한도 % 조회 — Claude Code 자격증명의 OAuth 토큰으로 usage endpoint 호출.
 /// 토큰 소스: `~/.claude/.credentials.json`(크로스플랫폼) → macOS 한정 Keychain 폴백.
+/// Windows 에서 WSL 배포판을 선택한 경우 그 Linux HOME 의 Claude 자격증명을 우선 사용한다.
 /// 비공식 endpoint 이므로 실패해도 토큰 표시에는 영향 없음 (한도 섹션만 숨김).
 struct OAuthLimitsProvider: ClaudeLimitsProviding, Sendable {
     private static let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
@@ -66,7 +67,25 @@ struct OAuthLimitsProvider: ClaudeLimitsProviding, Sendable {
             }
             throw LimitsError.httpStatus(http.statusCode)
         }
-        return try JSONDecoder().decode(LimitStatus.self, from: data)
+        return try Self.decodeStatus(data)
+    }
+
+    /// Anthropic usage 응답은 계정/배포 시점에 따라 레거시 `five_hour`/`seven_day`와
+    /// 신형 `limits[]`(`session`/`weekly_all`) 중 한쪽만 채워질 수 있다. Windows 트레이는
+    /// 두 대표 창을 고정 행으로 표시하므로 신형 응답도 같은 내부 필드로 정규화한다.
+    static func decodeStatus(_ data: Data) throws -> LimitStatus {
+        var status = try JSONDecoder().decode(LimitStatus.self, from: data)
+        if status.fiveHour == nil,
+           let entry = status.limits?.first(where: { $0.kind == "session" && $0.isActive != false }),
+           let percent = entry.percent {
+            status.fiveHour = LimitWindow(utilization: percent, resetsAt: entry.resetsAt)
+        }
+        if status.sevenDay == nil,
+           let entry = status.limits?.first(where: { $0.kind == "weekly_all" && $0.isActive != false }),
+           let percent = entry.percent {
+            status.sevenDay = LimitWindow(utilization: percent, resetsAt: entry.resetsAt)
+        }
+        return status
     }
 
     /// Retry-After 헤더(초 형식만) 파싱 — HTTP-date 형식·비정상 값은 nil(백오프 기본값 사용).
@@ -88,7 +107,9 @@ private actor OAuthAccessTokenCache {
             return cachedCredential.accessToken
         }
 
-        // 파일 크리덴셜(~/.claude/.credentials.json) — 키체인 무관, 프롬프트 없음, 크로스플랫폼.
+        // 파일 크리덴셜 — 키체인 무관, 프롬프트 없음, 크로스플랫폼.
+        // Windows 에서는 사용량 스캐너와 동일하게 '선택된 WSL HOME'을 먼저 본다. Claude Code를
+        // WSL에서 쓰는데 Windows 사용자 홈만 보면 토큰 사용량은 잡히면서 공식 5h/주간만 항상 `—`가 된다.
         if let credential = try Self.readClaudeCredentialsFile() {
             cachedCredential = credential
             return credential.accessToken
@@ -134,6 +155,19 @@ private actor OAuthAccessTokenCache {
     }
 
     private nonisolated static func readClaudeCredentialsFile() throws -> OAuthCredentialData.Credential? {
+        #if os(Windows)
+        // WSL 사용량을 선택한 경우 자격증명도 같은 Linux HOME 기준으로 맞춘다. WSL UNC 는
+        // Foundation Data(contentsOf:)가 빈 결과/실패를 낼 수 있어 사용량 스캐너에서 검증된 Win32
+        // same-handle reader를 재사용한다. 자격증명 파일은 비정상 대용량을 읽지 않도록 1 MiB 상한.
+        if let wslHome = WSLUsage.configuredBaseRoot {
+            let wslURL = wslHome.appendingPathComponent(".claude/.credentials.json")
+            if let data = WindowsUsageFile.read(wslURL, maxBytes: 1024 * 1024),
+               let credential = OAuthCredentialData.credential(from: data), !credential.isExpired {
+                return credential
+            }
+        }
+        #endif
+
         let url = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/.credentials.json")
         guard let data = try? Data(contentsOf: url) else { return nil }
