@@ -99,7 +99,7 @@ enum WindowsUsageFile {
                     url: URL(fileURLWithPath: childPath),
                     modificationDate: mtime,
                     size: Int(size64)))
-            } while FindNextFileW(handle, &data) != 0
+            } while FindNextFileW(handle, &data)
 
             _ = FindClose(handle)
         }
