@@ -1,31 +1,38 @@
 #if os(Windows)
 import Foundation
-import WinSDK
 
 /// `wsl.exe` does not reliably start when it is itself created with
-/// `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`. The main process keeps that strict inheritance policy for
-/// every ordinary child. WSL control queries take one extra hop instead: the main process starts a
-/// second PokeTokenBar process through `WindowsProcess.capture`, so the helper inherits only its
-/// three stdio handles; the helper then starts the trusted System32 `wsl.exe` with ordinary stdio
-/// inheritance. This gives WSL the CreateProcess shape it expects without making arbitrary app
-/// handles inheritable from the long-lived tray process.
+/// `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`. Keep that strict inheritance policy in the long-lived tray
+/// process, but add one short-lived trusted hop: PokeTokenBar starts Windows PowerShell through the
+/// hardened `WindowsProcess.capture`; PowerShell then launches the fixed System32 `wsl.exe` with
+/// ordinary process inheritance. The helper receives only the bounded stdio pipes from the parent,
+/// so this restores WSL compatibility without weakening normal child-process spawning.
 enum WSLProcessProxy {
-    static let flag = "--internal-wsl-proxy"
-
     static func capture(arguments: [String], timeout: Double = 20,
                         maxOutputBytes: Int = 64 * 1024) -> WindowsProcess.CaptureResult {
-        guard allowed(arguments: arguments), let executable = currentExecutablePath() else {
+        guard allowed(arguments: arguments),
+              let wsl = WindowsProcess.systemExecutable("wsl.exe"),
+              let powerShellDirectory = WindowsProcess.systemExecutable("WindowsPowerShell") else {
             return WindowsProcess.CaptureResult(stdout: Data(), exitCode: nil,
                                                 failure: .launch, processStopped: true)
         }
-        return WindowsProcess.capture(executable: executable,
-                                      arguments: [flag] + arguments,
-                                      timeout: timeout,
-                                      maxOutputBytes: maxOutputBytes)
+
+        let powerShell = powerShellDirectory + "\\v1.0\\powershell.exe"
+        let script = proxyScript(wsl: wsl, arguments: arguments)
+        guard let encoded = script.data(using: .utf16LittleEndian)?.base64EncodedString() else {
+            return WindowsProcess.CaptureResult(stdout: Data(), exitCode: nil,
+                                                failure: .launch, processStopped: true)
+        }
+
+        return WindowsProcess.capture(
+            executable: powerShell,
+            arguments: ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+            timeout: timeout,
+            maxOutputBytes: maxOutputBytes)
     }
 
-    /// Run only the two fixed control queries used by `WSLUsage`. Keeping this allowlist narrow
-    /// prevents the hidden helper flag from becoming a general-purpose WSL command launcher.
+    /// Run only the two fixed control queries used by `WSLUsage`. Keeping the allowlist narrow
+    /// prevents this compatibility path from becoming a general-purpose shell bridge.
     static func allowed(arguments: [String]) -> Bool {
         if arguments == ["--list", "--quiet"] { return true }
         guard arguments.count == 5,
@@ -37,56 +44,24 @@ enum WSLProcessProxy {
         return true
     }
 
-    /// Entry point used by the short-lived helper process. stdout/stderr are the bounded pipes
-    /// inherited from its parent `WindowsProcess.capture` call and are forwarded directly to WSL.
-    static func run(arguments: [String]) -> Int32 {
-        guard allowed(arguments: arguments),
-              let executable = WindowsProcess.systemExecutable("wsl.exe") else { return 2 }
+    private static func proxyScript(wsl: String, arguments: [String]) -> String {
+        let prefix = """
+        $ErrorActionPreference = 'Stop'
+        [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+        $OutputEncoding = [Console]::OutputEncoding
+        $wsl = \(psLiteral(wsl))
+        """
 
-        let commandLine = ([executable] + arguments).map(WindowsProcess.quoteArgument).joined(separator: " ")
-        var command = Array(commandLine.utf16) + [0]
-        let application = Array(executable.utf16) + [0]
-
-        var startup = STARTUPINFOW()
-        startup.cb = DWORD(MemoryLayout<STARTUPINFOW>.size)
-        startup.dwFlags = DWORD(STARTF_USESTDHANDLES)
-        startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE)
-        startup.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE)
-        startup.hStdError = GetStdHandle(STD_ERROR_HANDLE)
-
-        guard valid(startup.hStdInput), valid(startup.hStdOutput), valid(startup.hStdError) else { return 3 }
-
-        var child = PROCESS_INFORMATION()
-        let started = application.withUnsafeBufferPointer { app in
-            command.withUnsafeMutableBufferPointer { cmd in
-                CreateProcessW(app.baseAddress, cmd.baseAddress, nil, nil, true,
-                               DWORD(CREATE_NO_WINDOW), nil, nil, &startup, &child)
-            }
-        }
-        guard started else { return 4 }
-        defer {
-            if child.hThread != nil { CloseHandle(child.hThread) }
-            if child.hProcess != nil { CloseHandle(child.hProcess) }
+        if arguments == ["--list", "--quiet"] {
+            return prefix + "\n& $wsl --list --quiet\nexit $LASTEXITCODE\n"
         }
 
-        guard WaitForSingleObject(child.hProcess, INFINITE) == WAIT_OBJECT_0 else { return 5 }
-        var code: DWORD = 0
-        guard GetExitCodeProcess(child.hProcess, &code) else { return 6 }
-        return Int32(bitPattern: code)
+        let distribution = psLiteral(arguments[1])
+        return prefix + "\n& $wsl --distribution \(distribution) --exec /usr/bin/printenv HOME\nexit $LASTEXITCODE\n"
     }
 
-    private static func currentExecutablePath() -> String? {
-        var buffer = [WCHAR](repeating: 0, count: 32768)
-        let count = buffer.withUnsafeMutableBufferPointer {
-            GetModuleFileNameW(nil, $0.baseAddress, DWORD($0.count))
-        }
-        guard count > 0, Int(count) < buffer.count else { return nil }
-        return String(decoding: buffer.prefix(Int(count)), as: UTF16.self)
-    }
-
-    private static func valid(_ handle: HANDLE?) -> Bool {
-        guard let handle else { return false }
-        return handle != INVALID_HANDLE_VALUE
+    private static func psLiteral(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "''") + "'"
     }
 }
 #endif
