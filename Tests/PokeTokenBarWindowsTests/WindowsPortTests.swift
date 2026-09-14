@@ -1,4 +1,5 @@
 #if os(Windows)
+import Foundation
 import XCTest
 import WinSDK
 @testable import PokeTokenBar
@@ -102,6 +103,28 @@ final class WindowsPortTests: XCTestCase {
 
     func testWSLConfigurationFileNameIsStable() {
         XCTAssertEqual(WSLUsage.configurationFileName, "wsl-distro.txt")
+    }
+
+    /// Anthropic의 신형 usage 응답은 레거시 five_hour/seven_day 대신 limits[]만 채울 수 있다.
+    /// Windows Home의 고정 두 행이 `—`로 남지 않도록 session/weekly_all을 역호환 필드로 정규화한다.
+    func testClaudeLimitsArrayBackfillsFiveHourAndWeeklyRows() throws {
+        let json = """
+        {
+          "five_hour": null,
+          "seven_day": null,
+          "seven_day_opus": null,
+          "seven_day_sonnet": null,
+          "limits": [
+            {"kind":"session","percent":37.5,"resets_at":"2026-09-14T10:00:00Z","is_active":true},
+            {"kind":"weekly_all","percent":64.0,"resets_at":"2026-09-18T00:00:00Z","is_active":true}
+          ]
+        }
+        """
+        let status = try OAuthLimitsProvider.decodeStatus(Data(json.utf8))
+        XCTAssertEqual(status.fiveHour?.utilization, 37.5)
+        XCTAssertEqual(status.sevenDay?.utilization, 64.0)
+        XCTAssertEqual(status.fiveHour?.resetsAt, "2026-09-14T10:00:00Z")
+        XCTAssertEqual(status.sevenDay?.resetsAt, "2026-09-18T00:00:00Z")
     }
 }
 #endif
