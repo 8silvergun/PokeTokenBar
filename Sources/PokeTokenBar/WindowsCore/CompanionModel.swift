@@ -54,10 +54,24 @@ enum Rarity: String, Codable, Sendable {
         case .legendary: return 3
         }
     }
+    /// 프리미엄 알의 capture-rate 상한. 전설/환상은 별도 플래그로 판정되지만 실제 capture rate가
+    /// 충분히 낮아 uncommon/rare 보증 풀에 자연스럽게 포함된다. legendary 전용 알은 판매하지 않는다.
+    var captureRateCeiling: Int? {
+        switch self {
+        case .rare:      return 45
+        case .uncommon:  return 120
+        case .common:    return 255
+        case .legendary: return nil
+        }
+    }
+    func includes(captureRate: Int) -> Bool {
+        guard let ceiling = captureRateCeiling else { return false }
+        return captureRate <= ceiling
+    }
     static func from(captureRate: Int, isLegendary: Bool, isMythical: Bool) -> Rarity {
         if isLegendary || isMythical { return .legendary }
-        if captureRate <= 45 { return .rare }
-        if captureRate <= 120 { return .uncommon }
+        if Rarity.rare.includes(captureRate: captureRate) { return .rare }
+        if Rarity.uncommon.includes(captureRate: captureRate) { return .uncommon }
         return .common
     }
 }
@@ -159,22 +173,33 @@ enum ShinyCharm {
 
 /// 새 알(리롤) 밸런스 상수 — 상점 구매 시 현재 포켓몬을 폐기하고 새 알로 되돌린다.
 enum FreshEgg {
-    /// 상점 구매가. 마음에 안 드는 부화를 리롤하는 프리미엄(쌓인 토큰의 활용처). 폐기 개체는 졸업이
-    /// 아니라 그냥 사라지므로 도감·확률(collectedFinals)에 무영향 — "뽑은 적 없던 것처럼". 새 알은
-    /// 처음부터 재인큐베이션(5M) 필요 + 성장(usedAtStage) 소멸이라 스팸/파밍이 자연 억제된다.
+    /// 기본 알 구매가.
     static let price = 1_000_000_000
+
+    /// 상점 판매 티어. nil=보증 없는 기본 알, uncommon=고급 이상, rare=희귀 이상.
+    /// 전설 전용 알은 판매하지 않는다.
+    static let shopTiers: [Rarity?] = [nil, .uncommon, .rare]
+
+    /// macOS와 같은 밸런스: common 졸업량을 1배로 두고 보증 티어의 졸업량 비율을 가격 배율로 사용.
+    /// 1B / 2.5B / 4B.
+    static func price(guaranteeing tier: Rarity?) -> Int {
+        guard let tier else { return price }
+        let multiplier = Double(PokemonBalance.graduationTotal(tier))
+            / Double(PokemonBalance.graduationTotal(.common))
+        return Int((Double(price) * multiplier).rounded())
+    }
 }
 
-/// 상점 표시 한 줄 — 판매 아이템(ItemKind) 또는 새 알 리롤(즉시 액션이라 ItemKind 가 아님).
-/// CompanionStore.shopEntries 가 이 둘을 가격 오름차순으로 병합해 뷰가 단일 목록으로 그린다.
+/// 상점 표시 한 줄 — 판매 아이템(ItemKind) 또는 알 리롤.
+/// `egg(nil)`=기본, `egg(.uncommon)`=고급 이상, `egg(.rare)`=희귀 이상.
 enum ShopEntry: Hashable, Sendable {
     case item(ItemKind)
-    case freshEgg
+    case egg(Rarity?)
 
     var price: Int {
         switch self {
         case .item(let kind): return kind.shopPrice ?? 0
-        case .freshEgg: return FreshEgg.price
+        case .egg(let tier): return FreshEgg.price(guaranteeing: tier)
         }
     }
 }
@@ -386,6 +411,8 @@ struct CompanionState: Codable, Sendable {
     var spentTokens = 0
     // 현재 알이 생긴 뒤 쓴 토큰(부화 인큐베이션). 누적(usedSinceInstall)과 별개 — 졸업 후 새 알마다 0.
     var eggUsage = 0
+    // 상점에서 산 알의 보증 등급 하한. nil=기본 알/졸업으로 받은 알.
+    var eggTier: Rarity?
     // 알 상태에서 미리 롤해둔 부화 종(프리패칭) — 부화 순간 네트워크 딜레이 제거. 재시작에도 유지.
     var pendingHatchID: Int?
     var claimedTodayTokens = 0
@@ -413,6 +440,7 @@ struct CompanionState: Codable, Sendable {
         usedSinceInstall = try c.decodeIfPresent(Int.self, forKey: .usedSinceInstall) ?? 0
         spentTokens = try c.decodeIfPresent(Int.self, forKey: .spentTokens) ?? 0
         eggUsage = try c.decodeIfPresent(Int.self, forKey: .eggUsage) ?? 0
+        eggTier = try c.decodeIfPresent(Rarity.self, forKey: .eggTier)
         pendingHatchID = try c.decodeIfPresent(Int.self, forKey: .pendingHatchID)
         claimedTodayTokens = try c.decodeIfPresent(Int.self, forKey: .claimedTodayTokens) ?? 0
         lastDate = try c.decodeIfPresent(String.self, forKey: .lastDate) ?? ""
