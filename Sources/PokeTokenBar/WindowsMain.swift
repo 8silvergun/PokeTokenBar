@@ -28,6 +28,7 @@ struct PTBWindowsCLI {
         }
         let cliFlags: Set<String> = ["--report", "--icon-test", "--update-check", "--autostart-test"]
         guard args.contains(where: cliFlags.contains) else {
+            WindowsFloatingPet.prepare()
             WindowsTray.run()
             return
         }

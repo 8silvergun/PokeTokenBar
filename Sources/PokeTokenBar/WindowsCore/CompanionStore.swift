@@ -98,6 +98,22 @@ final class CompanionStore {
     }
     var currentNature: PokemonNature? { state.active?.nature }
 
+    var representativeSpeciesID: Int? { state.representativeSpeciesID }
+    var representativeVisualSpeciesID: Int? { state.representativeSpeciesID ?? currentSpeciesID }
+    var representativeVisualIsShiny: Bool {
+        guard let selected = state.representativeSpeciesID else { return currentIsShiny }
+        return state.ownsShinySpecies(selected)
+    }
+
+    /// nil은 현재 개체 자동 추적. 도감에 없는 종은 기존 선택을 유지한 채 거부한다.
+    @discardableResult
+    func setRepresentativeSpeciesID(_ id: Int?) -> Bool {
+        if let id, !state.ownsSpecies(id) { return false }
+        state.representativeSpeciesID = id
+        save()
+        return true
+    }
+
     var isEgg: Bool { state.active == nil }
     var eggStarted: Bool { state.eggUsage > 0 }
     var eggProgress: Double { min(1, max(0, Double(state.eggUsage) / Double(PokemonBalance.eggHatchThreshold))) }

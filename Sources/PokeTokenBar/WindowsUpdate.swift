@@ -29,9 +29,9 @@ enum WindowsUpdate {
     struct Available: Sendable, Equatable { let version: String; let url: String }
 
     /// Query the latest release; return it only when strictly newer than `currentVersion`.
-    /// Returns nil while automatic installer updates are disabled, when up to date, or on failure.
+    /// Availability checking is safe even while automatic installer execution is disabled: the
+    /// UI can surface the trusted GitHub release page without downloading/running an EXE.
     static func check() async -> Available? {
-        guard automaticInstallerEnabled else { return nil }
         guard let url = URL(string: "https://api.github.com/repos/\(repo)/releases/latest") else { return nil }
         var req = URLRequest(url: url, timeoutInterval: 15)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
