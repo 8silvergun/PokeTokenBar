@@ -210,6 +210,37 @@ actor PokeAPIClient: PokeProviding {
     }
 
     private func get<T: Decodable>(_ url: URL) async throws -> T {
+        #if os(Windows)
+        // Swift FoundationNetworking on Windows uses libcurl+Schannel. On machines where the
+        // certificate's revocation endpoint is unreachable, every HTTPS request can fail with
+        // CRYPT_E_NO_REVOCATION_CHECK even though the certificate chain itself is otherwise valid.
+        // The inbox curl.exe exposes Schannel's best-effort revocation mode, which still performs
+        // normal TLS validation while tolerating an unavailable revocation server. Restrict this
+        // subprocess path to the PokéAPI HTTPS host only; do not use -k/--insecure.
+        guard url.scheme == "https", url.host == "pokeapi.co",
+              let curl = WindowsProcess.systemExecutable("curl.exe") else {
+            throw URLError(.unsupportedURL)
+        }
+        let result = WindowsProcess.capture(
+            executable: curl,
+            arguments: [
+                "--silent", "--show-error", "--fail-with-body", "--location",
+                "--connect-timeout", "5", "--max-time", "15",
+                "--ssl-revoke-best-effort", url.absoluteString
+            ],
+            timeout: 20,
+            maxOutputBytes: 1024 * 1024)
+        guard result.failure == nil, result.exitCode == 0, !result.stdout.isEmpty else {
+            AppLog.write("pokeapi curl failed path=\(url.path) exit=\(result.exitCode.map(String.init) ?? "nil") failure=\(String(describing: result.failure))")
+            throw URLError(.cannotLoadFromNetwork)
+        }
+        do {
+            return try JSONDecoder().decode(T.self, from: result.stdout)
+        } catch {
+            AppLog.write("pokeapi decode failed path=\(url.path): \(error)")
+            throw error
+        }
+        #else
         var req = URLRequest(url: url)
         req.timeoutInterval = 15
         let (data, response) = try await session.data(for: req)
@@ -224,6 +255,7 @@ actor PokeAPIClient: PokeProviding {
             AppLog.write("pokeapi decode failed path=\(url.path): \(error)")
             throw error
         }
+        #endif
     }
 
     private func node(from link: ChainLink) -> EvoNode {
