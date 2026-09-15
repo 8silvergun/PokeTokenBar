@@ -18,7 +18,7 @@ jobs:
           ref: fix/windows-p0-shop-parity
           fetch-depth: 0
       - name: Patch WindowsTray.swift
-        shell: python
+        shell: 'python {0}'
         run: |
           from pathlib import Path
 
@@ -50,14 +50,15 @@ jobs:
               '        // rendered Claude percentages but never forwarded the 100% edge to grantCandies(), so the\n'
               '        // Bag could never earn the same Rare Candy rewards as macOS. Stable keys keep this idempotent.\n'
               '        var candyWindows: [CandyWindow] = []\n'
+              '        let rewardLanguage = await companion.language\n'
               '        if let u = claude5h {\n'
-              '            let name = await companion.language == .ko ? "Claude 5시간 세션"\n'
-              '                : (await companion.language == .ja ? "Claude 5時間セッション" : "Claude 5-hour session")\n'
+              '            let name = rewardLanguage == .ko ? "Claude 5시간 세션"\n'
+              '                : (rewardLanguage == .ja ? "Claude 5時間セッション" : "Claude 5-hour session")\n'
               '            candyWindows.append(CandyWindow(key: "claude.fiveHour", name: name, kind: .session, utilization: Double(u)))\n'
               '        }\n'
               '        if let u = claude7d {\n'
-              '            let name = await companion.language == .ko ? "Claude 주간"\n'
-              '                : (await companion.language == .ja ? "Claude 週間" : "Claude weekly")\n'
+              '            let name = rewardLanguage == .ko ? "Claude 주간"\n'
+              '                : (rewardLanguage == .ja ? "Claude 週間" : "Claude weekly")\n'
               '            candyWindows.append(CandyWindow(key: "claude.sevenDay", name: name, kind: .weekly, utilization: Double(u)))\n'
               '        }\n'
               '        await companion.grantCandies(from: candyWindows, limitsReady: !candyWindows.isEmpty)\n'
