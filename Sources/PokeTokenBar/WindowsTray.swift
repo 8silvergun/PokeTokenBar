@@ -65,6 +65,8 @@ enum WindowsTray {
     nonisolated(unsafe) static var settingsContentH: Int32 = 0   // total Settings content height (scroll clamp)
     nonisolated(unsafe) private static var uiLang = "en"                  // current UI language for L()
     nonisolated(unsafe) private static var dexScroll: Int32 = 0           // dex grid scroll offset (px)
+    nonisolated(unsafe) private static var shopScroll: Int32 = 0          // shop cards scroll offset (px)
+    nonisolated(unsafe) private static var shopContentH: Int32 = 0        // shop card content height
     private static let dexGridTop: Int32 = 82   // below the tab bar + dex header
     private static let dexCellH: Int32 = 78
     private static let dexCols: Int32 = 4
@@ -180,7 +182,7 @@ enum WindowsTray {
         await companion.update(todayTokens: todayTotal, todayDate: todayKey, monthTotal: monthTotal,
                                burnTier: todayTotal > 0 ? .normal : .idle, limitWarning: false,
                                hasUsageData: !all.isEmpty)
-        let disp = await companion.windowsDisplay   // Sendable snapshot (single actor hop)
+        var disp = await companion.windowsDisplay   // refreshed again after limit rewards below
 
         var claude5h: Int?, claude7d: Int?
         let codexPct: Int? = nil
@@ -208,6 +210,24 @@ enum WindowsTray {
         } else {
             (claude5h, claude7d) = lock.withLock { (lastClaude5h, lastClaude7d) }
         }
+        // Limit rewards are part of companion state, not merely UI. Windows previously fetched and
+        // rendered Claude percentages but never forwarded the 100% edge to grantCandies(), so the
+        // Bag could never earn the same Rare Candy rewards as macOS. Stable keys keep this idempotent.
+        var candyWindows: [CandyWindow] = []
+        let rewardLanguage = await companion.language
+        if let u = claude5h {
+            let name = rewardLanguage == .ko ? "Claude 5시간 세션"
+                : (rewardLanguage == .ja ? "Claude 5時間セッション" : "Claude 5-hour session")
+            candyWindows.append(CandyWindow(key: "claude.fiveHour", name: name, kind: .session, utilization: Double(u)))
+        }
+        if let u = claude7d {
+            let name = rewardLanguage == .ko ? "Claude 주간"
+                : (rewardLanguage == .ja ? "Claude 週間" : "Claude weekly")
+            candyWindows.append(CandyWindow(key: "claude.sevenDay", name: name, kind: .weekly, utilization: Double(u)))
+        }
+        await companion.grantCandies(from: candyWindows, limitsReady: !candyWindows.isEmpty)
+        disp = await companion.windowsDisplay   // inventory may have changed after a reward
+
         // Codex rate-limit fetch is skipped on Windows: codex 0.145.0's account/rateLimits/read
         // returns no data (verified directly), and each attempt otherwise hangs the refresh on a
         // 20s spawn timeout. Codex *usage* (tokens) is unaffected — it's parsed from log files.
@@ -964,12 +984,12 @@ enum WindowsTray {
         if !e.priceText.isEmpty {
             let pf = makeFont(-13, bold: false); o = SelectObject(hdc, pf)
             SetTextColor(hdc, rgb(140, 140, 150))
-            var pr = RECT(left: left + 20, top: top + cardH - 30, right: right - 110, bottom: top + cardH - 8)
+            var pr = RECT(left: left + 20, top: top + cardH - 30, right: right - 132, bottom: top + cardH - 8)
             drawText(e.priceText, in: hdc, rect: &pr, format: UINT(DT_LEFT | DT_SINGLELINE))
             SelectObject(hdc, o); DeleteObject(pf)
         }
         let btnFont = makeFont(-13, bold: true); o = SelectObject(hdc, btnFont)
-        let brect = RECT(left: right - 94, top: top + cardH - 40, right: right - 16, bottom: top + cardH - 8)
+        let brect = RECT(left: right - 120, top: top + cardH - 40, right: right - 16, bottom: top + cardH - 8)
         drawButton(hdc, brect, e.button, enabled: e.enabled)
         if e.enabled { buttonHits.append((brect, e.action)) }
         SelectObject(hdc, o); DeleteObject(btnFont)
@@ -1003,9 +1023,18 @@ enum WindowsTray {
         var hr = RECT(left: left + 16, top: hcTop + 68, right: right - 16, bottom: hcTop + 88)
         drawText(disp.shopHint, in: hdc, rect: &hr, format: UINT(DT_LEFT | DT_SINGLELINE))
         SelectObject(hdc, o); DeleteObject(hf)
-        // Item cards.
-        var top = hcTop + hcH + 10
-        for e in disp.shopEntries { drawItemCard(hdc, top: top, e); top += cardH + 10 }
+        // Item cards. Six entries no longer fit in the fixed popover, so keep the wallet header fixed
+        // and scroll only the cards. Off-screen cards are not rendered, preventing invisible hit targets.
+        let cardsTop = hcTop + hcH + 10
+        let saved = SaveDC(hdc)
+        IntersectClipRect(hdc, 0, cardsTop, popupWidth, popupHeight)
+        var top = cardsTop - shopScroll
+        for e in disp.shopEntries {
+            if top + cardH >= cardsTop && top <= popupHeight { drawItemCard(hdc, top: top, e) }
+            top += cardH + 10
+        }
+        RestoreDC(hdc, saved)
+        shopContentH = max(0, Int32(disp.shopEntries.count) * (cardH + 10) - 10)
     }
 
     private static func sectionHeader(_ hdc: HDC?, _ text: String) {
@@ -1060,6 +1089,12 @@ enum WindowsTray {
         }
         SelectObject(hdc, nOld); DeleteObject(nameFont)
         RestoreDC(hdc, saved)
+    }
+
+    private static func shopMaxScroll() -> Int32 {
+        let cardsTop = contentTop + 4 + 92 + 10
+        let visibleH = popupHeight - cardsTop - 8
+        return max(0, shopContentH - visibleH)
     }
 
     /// Max scroll offset for the current dex (rows below the fold).
@@ -1359,6 +1394,7 @@ enum WindowsTray {
             switch action {
             case 100...104:   // tab switch (Home/Bag/Shop/Dex/Settings)
                 popupView = action - 100
+                if popupView == 1 { shopScroll = 0 }
                 if popupView == 3 { dexScroll = 0 }
                 if popupView == 4 { settingsScroll = 0; openDropdown = 0 }
                 if let popupHwnd { InvalidateRect(popupHwnd, nil, true) }
@@ -1518,7 +1554,9 @@ enum WindowsTray {
             case 2: _ = await companion.useMint()
             case 3: _ = await companion.buyRareCandy()
             case 4: _ = await companion.buy(.shinyCharm)
-            case 5: _ = await companion.buyFreshEgg()
+            case 5: _ = await companion.buyEgg(nil)
+            case 6: _ = await companion.buyEgg(.uncommon)
+            case 7: _ = await companion.buyEgg(.rare)
             case 20: _ = await companion.buy(.mint)
             default: break
             }
@@ -1595,7 +1633,11 @@ enum WindowsTray {
             return 0
         case UINT(WM_MOUSEWHEEL):
             let delta = Int32(Int16(truncatingIfNeeded: wParam >> 16))   // ±120 per notch
-            if WindowsTray.popupView == 3, let h = WindowsTray.popupHwnd {   // dex view
+            if WindowsTray.popupView == 1, let h = WindowsTray.popupHwnd {   // shop view
+                let maxS = WindowsTray.shopMaxScroll()
+                WindowsTray.shopScroll = min(maxS, max(0, WindowsTray.shopScroll - delta / 120 * 52))
+                InvalidateRect(h, nil, true)
+            } else if WindowsTray.popupView == 3, let h = WindowsTray.popupHwnd {   // dex view
                 let count = WindowsTray.lock.withLock { WindowsTray.currentDisplay.dex.count }
                 let maxS = WindowsTray.dexMaxScroll(count)
                 WindowsTray.dexScroll = min(maxS, max(0, WindowsTray.dexScroll - delta / 120 * 52))
@@ -1722,18 +1764,31 @@ extension CompanionStore {
                 let owned = itemCount(kind)
                 let ownedPassive = kind.isPassive && owned > 0
                 let action = kind == .rareCandy ? 3 : (kind == .mint ? 20 : 4)
+                let can = canBuy(kind)
+                let shortfall = max(0, (kind.shopPrice ?? 0) - availableTokens)
+                let button = ownedPassive ? loc.ownedAlready
+                    : (!can && shortfall > 0 ? loc.windowsNeedMoreTokens(TokenFormatter.compact(shortfall)) : loc.buy)
                 return ShopCardEntry(
                     icon: kind.spriteName, emoji: kind.fallbackEmoji,
                     name: loc.itemName(kind), desc: loc.itemDescription(kind),
                     priceText: price(kind.shopPrice ?? 0),
                     ownedText: (!kind.isPassive && owned > 0) ? loc.ownedCount(owned) : "",
-                    button: ownedPassive ? loc.ownedAlready : loc.buy,
-                    enabled: canBuy(kind), action: action)
-            case .freshEgg:
+                    button: button, enabled: can, action: action)
+            case .egg(let tier):
+                let action: Int
+                switch tier {
+                case .uncommon?: action = 6
+                case .rare?: action = 7
+                default: action = 5
+                }
+                let can = canBuyEgg(tier)
+                let shortfall = max(0, FreshEgg.price(guaranteeing: tier) - availableTokens)
+                let button = !hasActive ? loc.windowsEggLockedShort
+                    : (!can && shortfall > 0 ? loc.windowsNeedMoreTokens(TokenFormatter.compact(shortfall)) : loc.buy)
                 return ShopCardEntry(
-                    icon: "egg", emoji: "🥚", name: loc.freshEggName, desc: loc.freshEggDescription,
-                    priceText: price(FreshEgg.price), ownedText: "",
-                    button: loc.buy, enabled: canBuyFreshEgg, action: 5)
+                    icon: "egg", emoji: "🥚", name: loc.windowsEggName(tier), desc: loc.windowsEggDescription(tier),
+                    priceText: price(FreshEgg.price(guaranteeing: tier)), ownedText: "",
+                    button: button, enabled: can, action: action)
             }
         }
         let shop: [ShopCardEntry] = shopEntries.map(shopCard)
