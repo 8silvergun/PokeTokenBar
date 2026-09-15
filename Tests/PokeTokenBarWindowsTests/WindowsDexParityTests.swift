@@ -97,13 +97,15 @@ final class WindowsDexParityTests: XCTestCase {
     }
 
     func testDexFoldsDuplicateSpeciesWhileCatchLogKeepsIndividuals() async throws {
+        // JSONEncoder/Decoder's default Date strategy is seconds since the 2001 reference date,
+        // so fixture timestamps use numbers rather than ISO-8601 strings.
         let first: [String: Any] = [
             "id": "one",
             "baseID": 1,
             "finalID": 1,
             "chainOrder": [1],
             "rarity": "common",
-            "caughtAt": "2026-09-14T00:00:00Z",
+            "caughtAt": 800_000_000.0,
             "isShiny": false,
             "nature": "hardy",
         ]
@@ -113,7 +115,7 @@ final class WindowsDexParityTests: XCTestCase {
             "finalID": 1,
             "chainOrder": [1],
             "rarity": "common",
-            "caughtAt": "2026-09-15T00:00:00Z",
+            "caughtAt": 800_086_400.0,
             "isShiny": true,
             "nature": "jolly",
         ]
