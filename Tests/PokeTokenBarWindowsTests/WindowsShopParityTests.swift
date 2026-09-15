@@ -87,67 +87,85 @@ final class WindowsShopParityTests: XCTestCase {
         let (store, url) = try await makeStore(used: 500_000_000)
         defer { try? FileManager.default.removeItem(at: url) }
 
-        XCTAssertTrue(await store.buy(.mint))
-        XCTAssertEqual(await store.availableTokens, 400_000_000)
-        XCTAssertEqual(await store.itemCount(.mint), 1)
+        let bought = await store.buy(.mint)
+        let walletAfterBuy = await store.availableTokens
+        let mintAfterBuy = await store.itemCount(.mint)
+        XCTAssertTrue(bought)
+        XCTAssertEqual(walletAfterBuy, 400_000_000)
+        XCTAssertEqual(mintAfterBuy, 1)
 
-        // Loading the active line makes the companion fully usable; mint itself does not require the line.
         let before = await store.currentNature
         let changed = await store.useMint()
+        let mintAfterUse = await store.itemCount(.mint)
         XCTAssertNotNil(changed)
         XCTAssertNotEqual(changed, before)
-        XCTAssertEqual(await store.itemCount(.mint), 0)
+        XCTAssertEqual(mintAfterUse, 0)
 
         let reloaded = await CompanionStore(provider: WindowsShopStubProvider(), fileURL: url)
-        XCTAssertEqual(await reloaded.state.spentTokens, Mint.price)
-        XCTAssertEqual(await reloaded.itemCount(.mint), 0)
-        XCTAssertEqual(await reloaded.currentNature, changed)
+        let reloadedState = await reloaded.state
+        let reloadedMint = await reloaded.itemCount(.mint)
+        let reloadedNature = await reloaded.currentNature
+        XCTAssertEqual(reloadedState.spentTokens, Mint.price)
+        XCTAssertEqual(reloadedMint, 0)
+        XCTAssertEqual(reloadedNature, changed)
     }
 
     func testRareCandyPurchaseUseAndPersistence() async throws {
         let (store, url) = try await makeStore(used: 1_000_000_000, active: false)
         defer { try? FileManager.default.removeItem(at: url) }
 
-        // Direct test hatch loads currentLine, then candy use can exercise the actual XP path.
         await store.hatch(baseID: 1)
-        XCTAssertTrue(await store.buyRareCandy())
-        XCTAssertEqual(await store.rareCandyCount, 1)
-        XCTAssertEqual(await store.availableTokens, 500_000_000)
-        XCTAssertEqual(await store.useRareCandy(), .progressed)
-        XCTAssertEqual(await store.rareCandyCount, 0)
-        XCTAssertEqual(await store.state.active?.usedAtStage, RareCandy.xp)
+        let bought = await store.buyRareCandy()
+        let candyAfterBuy = await store.rareCandyCount
+        let walletAfterBuy = await store.availableTokens
+        let result = await store.useRareCandy()
+        let candyAfterUse = await store.rareCandyCount
+        let usedAtStage = await store.state.active?.usedAtStage
+        XCTAssertTrue(bought)
+        XCTAssertEqual(candyAfterBuy, 1)
+        XCTAssertEqual(walletAfterBuy, 500_000_000)
+        XCTAssertEqual(result, .progressed)
+        XCTAssertEqual(candyAfterUse, 0)
+        XCTAssertEqual(usedAtStage, RareCandy.xp)
 
         let reloaded = await CompanionStore(provider: WindowsShopStubProvider(), fileURL: url)
-        XCTAssertEqual(await reloaded.state.spentTokens, RareCandy.price)
-        XCTAssertEqual(await reloaded.rareCandyCount, 0)
+        let reloadedState = await reloaded.state
+        let reloadedCandy = await reloaded.rareCandyCount
+        XCTAssertEqual(reloadedState.spentTokens, RareCandy.price)
+        XCTAssertEqual(reloadedCandy, 0)
     }
 
     func testPremiumEggGuaranteeSurvivesRejectedHatchAndIsConsumedOnSuccess() async throws {
         let (store, url) = try await makeStore(used: 5_000_000_000)
         defer { try? FileManager.default.removeItem(at: url) }
 
-        XCTAssertTrue(await store.buyEgg(.rare))
-        XCTAssertEqual(await store.state.eggTier, .rare)
-        XCTAssertNil(await store.state.active)
-        XCTAssertEqual(await store.state.spentTokens, FreshEgg.price(guaranteeing: .rare))
+        let bought = await store.buyEgg(.rare)
+        var state = await store.state
+        XCTAssertTrue(bought)
+        XCTAssertEqual(state.eggTier, .rare)
+        XCTAssertNil(state.active)
+        XCTAssertEqual(state.spentTokens, FreshEgg.price(guaranteeing: .rare))
 
-        // A common roll must never silently violate the purchased guarantee.
         await store.hatch(baseID: 1)
-        XCTAssertNil(await store.state.active)
-        XCTAssertEqual(await store.state.eggTier, .rare)
+        state = await store.state
+        XCTAssertNil(state.active)
+        XCTAssertEqual(state.eggTier, .rare)
 
-        // A qualifying roll consumes the guarantee.
         await store.hatch(baseID: 2)
-        XCTAssertEqual(await store.state.active?.rarity, .rare)
-        XCTAssertNil(await store.state.eggTier)
+        state = await store.state
+        XCTAssertEqual(state.active?.rarity, .rare)
+        XCTAssertNil(state.eggTier)
     }
 
     func testEggPurchaseGateRejectsUnsupportedLegendaryTier() async throws {
         let (store, url) = try await makeStore(used: 10_000_000_000)
         defer { try? FileManager.default.removeItem(at: url) }
-        XCTAssertFalse(await store.canBuyEgg(.legendary))
-        XCTAssertFalse(await store.buyEgg(.legendary))
-        XCTAssertEqual(await store.state.spentTokens, 0)
+        let canBuy = await store.canBuyEgg(.legendary)
+        let bought = await store.buyEgg(.legendary)
+        let state = await store.state
+        XCTAssertFalse(canBuy)
+        XCTAssertFalse(bought)
+        XCTAssertEqual(state.spentTokens, 0)
     }
 
     func testCandyGrantEdgeDedupAndRearm() async throws {
@@ -158,20 +176,25 @@ final class WindowsShopParityTests: XCTestCase {
         let session100 = CandyWindow(key: "claude.fiveHour", name: "Claude 5h", kind: .session, utilization: 100)
 
         await store.grantCandies(from: [session99], limitsReady: true)
-        XCTAssertEqual(await store.rareCandyCount, 0)
+        var candy = await store.rareCandyCount
+        XCTAssertEqual(candy, 0)
 
         await store.grantCandies(from: [session100], limitsReady: true)
-        XCTAssertEqual(await store.rareCandyCount, 1)
+        candy = await store.rareCandyCount
+        XCTAssertEqual(candy, 1)
         await store.grantCandies(from: [session100], limitsReady: true)
-        XCTAssertEqual(await store.rareCandyCount, 1, "same 100% window must not grant twice")
+        candy = await store.rareCandyCount
+        XCTAssertEqual(candy, 1, "same 100% window must not grant twice")
 
         await store.grantCandies(from: [session99], limitsReady: true)
         await store.grantCandies(from: [session100], limitsReady: true)
-        XCTAssertEqual(await store.rareCandyCount, 2, "dropping below 100% rearms the edge")
+        candy = await store.rareCandyCount
+        XCTAssertEqual(candy, 2, "dropping below 100% rearms the edge")
 
         let weekly100 = CandyWindow(key: "claude.sevenDay", name: "Claude weekly", kind: .weekly, utilization: 100)
         await store.grantCandies(from: [weekly100], limitsReady: true)
-        XCTAssertEqual(await store.rareCandyCount, 2 + RareCandy.weeklyGrant)
+        candy = await store.rareCandyCount
+        XCTAssertEqual(candy, 2 + RareCandy.weeklyGrant)
     }
 
     func testFirstLimitObservationSeedsWithoutRetroactiveGrant() async throws {
@@ -179,8 +202,10 @@ final class WindowsShopParityTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
         let alreadyFull = CandyWindow(key: "claude.sevenDay", name: "Claude weekly", kind: .weekly, utilization: 100)
         await store.grantCandies(from: [alreadyFull], limitsReady: true)
-        XCTAssertEqual(await store.rareCandyCount, 0)
-        XCTAssertTrue(await store.state.candyFeatureSeeded)
+        let candy = await store.rareCandyCount
+        let state = await store.state
+        XCTAssertEqual(candy, 0)
+        XCTAssertTrue(state.candyFeatureSeeded)
     }
 }
 #endif
