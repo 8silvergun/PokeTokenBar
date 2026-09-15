@@ -50,18 +50,27 @@ final class WindowsCompanionUXParityTests: XCTestCase {
     func testRepresentativeSelectionPersistsAndDrivesVisualSubject() async throws {
         let url = try makeStateURL(); defer { try? FileManager.default.removeItem(at: url) }
         let store = await CompanionStore(provider: WindowsCompanionUXStubProvider(), fileURL: url)
-        XCTAssertTrue(await store.setRepresentativeSpeciesID(25))
+
+        let selected = await store.setRepresentativeSpeciesID(25)
+        XCTAssertTrue(selected)
         let first = await store.windowsDisplay
         XCTAssertEqual(first.representativeSpeciesID, 25)
         XCTAssertEqual(first.visualSpeciesID, 25)
         XCTAssertTrue(first.visualIsShiny)
 
         let reloaded = await CompanionStore(provider: WindowsCompanionUXStubProvider(), fileURL: url)
-        XCTAssertEqual(await reloaded.representativeSpeciesID, 25)
-        XCTAssertFalse(await reloaded.setRepresentativeSpeciesID(999), "unowned species must be rejected")
-        XCTAssertEqual(await reloaded.representativeSpeciesID, 25, "failed selection must not clear the previous choice")
-        XCTAssertTrue(await reloaded.setRepresentativeSpeciesID(nil))
-        XCTAssertNil(await reloaded.representativeSpeciesID)
+        let persistedID = await reloaded.representativeSpeciesID
+        XCTAssertEqual(persistedID, 25)
+
+        let invalidSelection = await reloaded.setRepresentativeSpeciesID(999)
+        XCTAssertFalse(invalidSelection, "unowned species must be rejected")
+        let afterInvalid = await reloaded.representativeSpeciesID
+        XCTAssertEqual(afterInvalid, 25, "failed selection must not clear the previous choice")
+
+        let reset = await reloaded.setRepresentativeSpeciesID(nil)
+        XCTAssertTrue(reset)
+        let resetID = await reloaded.representativeSpeciesID
+        XCTAssertNil(resetID)
     }
 
     func testFloatingPetSizeIsBounded() {
