@@ -1990,7 +1990,7 @@ extension CompanionStore {
                              caughtAt: e.caughtAt, isReleased: e.isReleased, isRaising: isActiveDexEntry(e))
             },
             lineNodes: hasActive ? lineNodes.compactMap { item in
-                guard case .species(let id) = item.subject else { return nil }
+                guard case .species(let id) = item.content else { return nil }
                 let kind: String
                 switch item.state { case .done: kind = "done"; case .current: kind = "cur"; case .future: kind = "future" }
                 return EvoThumb(id: id, kind: kind)
