@@ -1,0 +1,187 @@
+name: Apply Windows P0 tray patch
+
+on:
+  push:
+    branches: [fix/windows-p0-shop-parity]
+    paths:
+      - .github/workflows/windows-p0-self-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/windows-p0-shop-parity
+          fetch-depth: 0
+      - name: Patch WindowsTray.swift
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("Sources/PokeTokenBar/WindowsTray.swift")
+          s = path.read_text(encoding="utf-8")
+
+          def rep(old: str, new: str, count: int = 1):
+              global s
+              actual = s.count(old)
+              if actual != count:
+                  raise SystemExit(f"expected {count} occurrence(s), found {actual}: {old[:100]!r}")
+              s = s.replace(old, new, count)
+
+          rep(
+              '    nonisolated(unsafe) private static var dexScroll: Int32 = 0           // dex grid scroll offset (px)\n',
+              '    nonisolated(unsafe) private static var dexScroll: Int32 = 0           // dex grid scroll offset (px)\n'
+              '    nonisolated(unsafe) private static var shopScroll: Int32 = 0          // shop cards scroll offset (px)\n'
+              '    nonisolated(unsafe) private static var shopContentH: Int32 = 0        // shop card content height\n'
+          )
+
+          rep(
+              '        let disp = await companion.windowsDisplay   // Sendable snapshot (single actor hop)\n',
+              '        var disp = await companion.windowsDisplay   // refreshed again after limit rewards below\n'
+          )
+
+          rep(
+              '        // Codex rate-limit fetch is skipped on Windows: codex 0.145.0\'s account/rateLimits/read\n',
+              '        // Limit rewards are part of companion state, not merely UI. Windows previously fetched and\n'
+              '        // rendered Claude percentages but never forwarded the 100% edge to grantCandies(), so the\n'
+              '        // Bag could never earn the same Rare Candy rewards as macOS. Stable keys keep this idempotent.\n'
+              '        var candyWindows: [CandyWindow] = []\n'
+              '        if let u = claude5h {\n'
+              '            let name = await companion.language == .ko ? "Claude 5시간 세션"\n'
+              '                : (await companion.language == .ja ? "Claude 5時間セッション" : "Claude 5-hour session")\n'
+              '            candyWindows.append(CandyWindow(key: "claude.fiveHour", name: name, kind: .session, utilization: Double(u)))\n'
+              '        }\n'
+              '        if let u = claude7d {\n'
+              '            let name = await companion.language == .ko ? "Claude 주간"\n'
+              '                : (await companion.language == .ja ? "Claude 週間" : "Claude weekly")\n'
+              '            candyWindows.append(CandyWindow(key: "claude.sevenDay", name: name, kind: .weekly, utilization: Double(u)))\n'
+              '        }\n'
+              '        await companion.grantCandies(from: candyWindows, limitsReady: !candyWindows.isEmpty)\n'
+              '        disp = await companion.windowsDisplay   // inventory may have changed after a reward\n\n'
+              '        // Codex rate-limit fetch is skipped on Windows: codex 0.145.0\'s account/rateLimits/read\n'
+          )
+
+          rep(
+              '            var pr = RECT(left: left + 20, top: top + cardH - 30, right: right - 110, bottom: top + cardH - 8)\n',
+              '            var pr = RECT(left: left + 20, top: top + cardH - 30, right: right - 132, bottom: top + cardH - 8)\n'
+          )
+          rep(
+              '        let brect = RECT(left: right - 94, top: top + cardH - 40, right: right - 16, bottom: top + cardH - 8)\n',
+              '        let brect = RECT(left: right - 120, top: top + cardH - 40, right: right - 16, bottom: top + cardH - 8)\n'
+          )
+
+          rep(
+              '        // Item cards.\n        var top = hcTop + hcH + 10\n        for e in disp.shopEntries { drawItemCard(hdc, top: top, e); top += cardH + 10 }\n',
+              '        // Item cards. Six entries no longer fit in the fixed popover, so keep the wallet header fixed\n'
+              '        // and scroll only the cards. Off-screen cards are not rendered, which also prevents invisible\n'
+              '        // button hit targets from overlapping the header.\n'
+              '        let cardsTop = hcTop + hcH + 10\n'
+              '        let saved = SaveDC(hdc)\n'
+              '        IntersectClipRect(hdc, 0, cardsTop, popupWidth, popupHeight)\n'
+              '        var top = cardsTop - shopScroll\n'
+              '        for e in disp.shopEntries {\n'
+              '            if top + cardH >= cardsTop && top <= popupHeight { drawItemCard(hdc, top: top, e) }\n'
+              '            top += cardH + 10\n'
+              '        }\n'
+              '        RestoreDC(hdc, saved)\n'
+              '        shopContentH = max(0, Int32(disp.shopEntries.count) * (cardH + 10) - 10)\n'
+          )
+
+          rep(
+              '    /// Max scroll offset for the current dex (rows below the fold).\n    private static func dexMaxScroll(_ count: Int) -> Int32 {\n',
+              '    private static func shopMaxScroll() -> Int32 {\n'
+              '        let cardsTop = contentTop + 4 + 92 + 10\n'
+              '        let visibleH = popupHeight - cardsTop - 8\n'
+              '        return max(0, shopContentH - visibleH)\n'
+              '    }\n\n'
+              '    /// Max scroll offset for the current dex (rows below the fold).\n'
+              '    private static func dexMaxScroll(_ count: Int) -> Int32 {\n'
+          )
+
+          rep(
+              '                if popupView == 3 { dexScroll = 0 }\n                if popupView == 4 { settingsScroll = 0; openDropdown = 0 }\n',
+              '                if popupView == 1 { shopScroll = 0 }\n'
+              '                if popupView == 3 { dexScroll = 0 }\n'
+              '                if popupView == 4 { settingsScroll = 0; openDropdown = 0 }\n'
+          )
+
+          rep(
+              '            case 5: _ = await companion.buyFreshEgg()\n            case 20: _ = await companion.buy(.mint)\n',
+              '            case 5: _ = await companion.buyEgg(nil)\n'
+              '            case 6: _ = await companion.buyEgg(.uncommon)\n'
+              '            case 7: _ = await companion.buyEgg(.rare)\n'
+              '            case 20: _ = await companion.buy(.mint)\n'
+          )
+
+          rep(
+              '            if WindowsTray.popupView == 3, let h = WindowsTray.popupHwnd {   // dex view\n',
+              '            if WindowsTray.popupView == 1, let h = WindowsTray.popupHwnd {   // shop view\n'
+              '                let maxS = WindowsTray.shopMaxScroll()\n'
+              '                WindowsTray.shopScroll = min(maxS, max(0, WindowsTray.shopScroll - delta / 120 * 52))\n'
+              '                InvalidateRect(h, nil, true)\n'
+              '            } else if WindowsTray.popupView == 3, let h = WindowsTray.popupHwnd {   // dex view\n'
+          )
+
+          old = '''            case .item(let kind):
+                let owned = itemCount(kind)
+                let ownedPassive = kind.isPassive && owned > 0
+                let action = kind == .rareCandy ? 3 : (kind == .mint ? 20 : 4)
+                return ShopCardEntry(
+                    icon: kind.spriteName, emoji: kind.fallbackEmoji,
+                    name: loc.itemName(kind), desc: loc.itemDescription(kind),
+                    priceText: price(kind.shopPrice ?? 0),
+                    ownedText: (!kind.isPassive && owned > 0) ? loc.ownedCount(owned) : "",
+                    button: ownedPassive ? loc.ownedAlready : loc.buy,
+                    enabled: canBuy(kind), action: action)
+            case .freshEgg:
+                return ShopCardEntry(
+                    icon: "egg", emoji: "🥚", name: loc.freshEggName, desc: loc.freshEggDescription,
+                    priceText: price(FreshEgg.price), ownedText: "",
+                    button: loc.buy, enabled: canBuyFreshEgg, action: 5)
+'''
+          new = '''            case .item(let kind):
+                let owned = itemCount(kind)
+                let ownedPassive = kind.isPassive && owned > 0
+                let action = kind == .rareCandy ? 3 : (kind == .mint ? 20 : 4)
+                let can = canBuy(kind)
+                let shortfall = max(0, (kind.shopPrice ?? 0) - availableTokens)
+                let button = ownedPassive ? loc.ownedAlready
+                    : (!can && shortfall > 0 ? loc.windowsNeedMoreTokens(TokenFormatter.compact(shortfall)) : loc.buy)
+                return ShopCardEntry(
+                    icon: kind.spriteName, emoji: kind.fallbackEmoji,
+                    name: loc.itemName(kind), desc: loc.itemDescription(kind),
+                    priceText: price(kind.shopPrice ?? 0),
+                    ownedText: (!kind.isPassive && owned > 0) ? loc.ownedCount(owned) : "",
+                    button: button, enabled: can, action: action)
+            case .egg(let tier):
+                let action: Int
+                switch tier {
+                case .uncommon?: action = 6
+                case .rare?: action = 7
+                default: action = 5
+                }
+                let can = canBuyEgg(tier)
+                let shortfall = max(0, FreshEgg.price(guaranteeing: tier) - availableTokens)
+                let button = !hasActive ? loc.windowsEggLockedShort
+                    : (!can && shortfall > 0 ? loc.windowsNeedMoreTokens(TokenFormatter.compact(shortfall)) : loc.buy)
+                return ShopCardEntry(
+                    icon: "egg", emoji: "🥚", name: loc.windowsEggName(tier), desc: loc.windowsEggDescription(tier),
+                    priceText: price(FreshEgg.price(guaranteeing: tier)), ownedText: "",
+                    button: button, enabled: can, action: action)
+'''
+          rep(old, new)
+
+          path.write_text(s, encoding="utf-8")
+
+      - name: Commit patch and remove helper workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Sources/PokeTokenBar/WindowsTray.swift
+          git rm .github/workflows/windows-p0-self-patch.yml
+          git commit -m "feat(windows): wire P0 shop parity into tray"
+          git push origin HEAD:fix/windows-p0-shop-parity
