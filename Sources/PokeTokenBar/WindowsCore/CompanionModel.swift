@@ -422,7 +422,7 @@ struct CompanionState: Codable, Sendable {
     // 현재 포켓몬(없으면 알)
     var active: MonState?
     // 트레이/플로팅 펫에 고정할 대표 종. nil = 현재 육성 개체(또는 알)를 따라간다.
-    var representativeSpeciesID: Int?
+    var representativeSpeciesID: Int? = nil
     // 도감
     var dex: [DexEntry] = []
     // 소유한 (base,final) 쌍 — 분기 다양성용
