@@ -1,0 +1,37 @@
+name: Fix Windows companion UX once
+
+on:
+  push:
+    branches:
+      - feat/windows-settings-ops-parity
+    paths:
+      - scripts/fix_windows_companion_ux.py
+      - .github/workflows/fix-windows-companion-ux-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout working branch
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: feat/windows-settings-ops-parity
+          fetch-depth: 0
+      - name: Apply fix
+        run: python3 scripts/fix_windows_companion_ux.py
+      - name: Remove one-shot files
+        run: |
+          rm scripts/fix_windows_companion_ux.py
+          rm .github/workflows/fix-windows-companion-ux-once.yml
+      - name: Validate
+        run: git diff --check
+      - name: Commit fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(windows): initialize representative selection state"
+          git push origin HEAD:feat/windows-settings-ops-parity
