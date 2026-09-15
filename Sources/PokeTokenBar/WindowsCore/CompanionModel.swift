@@ -421,6 +421,8 @@ struct CompanionState: Codable, Sendable {
     var lastDate = ""
     // 현재 포켓몬(없으면 알)
     var active: MonState?
+    // 트레이/플로팅 펫에 고정할 대표 종. nil = 현재 육성 개체(또는 알)를 따라간다.
+    var representativeSpeciesID: Int? = nil
     // 도감
     var dex: [DexEntry] = []
     // 소유한 (base,final) 쌍 — 분기 다양성용
@@ -447,12 +449,30 @@ struct CompanionState: Codable, Sendable {
         claimedTodayTokens = try c.decodeIfPresent(Int.self, forKey: .claimedTodayTokens) ?? 0
         lastDate = try c.decodeIfPresent(String.self, forKey: .lastDate) ?? ""
         active = try c.decodeIfPresent(MonState.self, forKey: .active)
+        representativeSpeciesID = try c.decodeIfPresent(Int.self, forKey: .representativeSpeciesID)
         dex = try c.decodeIfPresent([DexEntry].self, forKey: .dex) ?? []
         collectedFinals = try c.decodeIfPresent(Set<String>.self, forKey: .collectedFinals) ?? []
         language = try c.decodeIfPresent(AppLanguage.self, forKey: .language) ?? .systemDefault
         inventory = try c.decodeIfPresent([String: Int].self, forKey: .inventory) ?? [:]
         candyGrantTier = try c.decodeIfPresent([String: Int].self, forKey: .candyGrantTier) ?? [:]
         candyFeatureSeeded = try c.decodeIfPresent(Bool.self, forKey: .candyFeatureSeeded) ?? false
+    }
+
+    /// 졸업 기록 또는 현재 개체가 실제 도달한 단계에 이 종이 포함되는가.
+    func ownsSpecies(_ speciesID: Int) -> Bool {
+        if dex.contains(where: { $0.chainOrder.contains(speciesID) }) { return true }
+        guard let active else { return false }
+        let reached = active.pathIDs.prefix(max(1, min(active.stageIndex + 1, active.pathIDs.count)))
+        return reached.contains(speciesID)
+    }
+
+    /// 보유한 특정 종 중 이로치 개체가 있는가. 위장 중 메타몽은 공개 전까지 숨긴다.
+    func ownsShinySpecies(_ speciesID: Int) -> Bool {
+        if dex.contains(where: { $0.isShiny && $0.chainOrder.contains(speciesID) }) { return true }
+        guard let active, active.isShiny else { return false }
+        if active.dittoDisguise != nil && !active.dittoRevealed { return false }
+        let reached = active.pathIDs.prefix(max(1, min(active.stageIndex + 1, active.pathIDs.count)))
+        return reached.contains(speciesID)
     }
 }
 

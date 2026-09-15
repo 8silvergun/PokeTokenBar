@@ -49,6 +49,8 @@ enum WindowsTray {
     nonisolated(unsafe) private static var lastClaude5h: Int?
     nonisolated(unsafe) private static var lastClaude7d: Int?
     nonisolated(unsafe) private static var lastLimitFetch: Date?   // throttle oauth/usage to ≥25s apart
+    nonisolated(unsafe) private static var providerStatuses: [String: ProviderStatus] = [:]
+    nonisolated(unsafe) private static var lastStatusFetch: Date?        // statuspage throttle (5 min)
     nonisolated(unsafe) private static var availableUpdate: WindowsUpdate.Available?   // newer release, if any
     nonisolated(unsafe) private static var lastUpdateCheck: Date?   // throttle the release check to ≥30 min
     nonisolated(unsafe) private static var updating = false   // true while an in-place update runs (full-cover overlay)
@@ -60,7 +62,7 @@ enum WindowsTray {
     nonisolated(unsafe) private static var emojiIcons: [String: HICON] = [:]   // emoji → color-image HICON (GDI can't draw color emoji)
     nonisolated(unsafe) private static var evoIcons: [Int: HICON] = [:]   // evo-line speciesID → sprite HICON (cache)
     nonisolated(unsafe) private static var selectedHomeProvider = 0   // 0=Claude 1=Codex 2=Gemini 3=OpenCode 4=Hermes (Home tabs)
-    nonisolated(unsafe) private static var openDropdown = 0   // Settings: 0=none, 1=language, 2=interval, 3=WSL
+    nonisolated(unsafe) private static var openDropdown = 0   // Settings: 0=none, 1=language, 2=interval, 3=WSL, 4=animation
     nonisolated(unsafe) private static var settingsScroll: Int32 = 0   // Settings tab mouse-wheel scroll (px)
     nonisolated(unsafe) static var settingsContentH: Int32 = 0   // total Settings content height (scroll clamp)
     nonisolated(unsafe) private static var uiLang = "en"                  // current UI language for L()
@@ -125,7 +127,7 @@ enum WindowsTray {
 
         scheduleRefresh()
         applyRefreshInterval()   // usage-refresh timer from the configured interval (default 2 min)
-        _ = SetTimer(sinkHwnd, animTimerID, 120, nil)   // sprite animation ~8fps
+        applyAnimationQuality()        // power saver ≈2.5fps / balanced ≈5fps / smooth ≈10fps
         if CommandLine.arguments.contains("--show-popup") { stayVisible = true; togglePopup() }
 
         var msg = MSG()
@@ -231,17 +233,34 @@ enum WindowsTray {
         await companion.grantCandies(from: candyWindows, limitsReady: !candyWindows.isEmpty)
         disp = await companion.windowsDisplay   // inventory may have changed after a reward
 
+        // Provider incidents are display-only. Fetch at most every five minutes and retain the last
+        // good value for an endpoint that temporarily fails, matching macOS UsageStore semantics.
+        let statusEnabled = UserDefaults.standard.object(forKey: "statusChecksEnabled") as? Bool ?? true
+        if statusEnabled {
+            let statusDue = lock.withLock { () -> Bool in
+                let due = lastStatusFetch.map { now.timeIntervalSince($0) >= 300 } ?? true
+                if due { lastStatusFetch = now }
+                return due
+            }
+            if statusDue {
+                let fetched = await StatuspageStatusProvider().fetch()
+                lock.withLock {
+                    for (id, status) in fetched { providerStatuses[id] = status }
+                }
+            }
+        }
+
         // Codex rate-limit fetch is skipped on Windows: codex 0.145.0's account/rateLimits/read
         // returns no data (verified directly), and each attempt otherwise hangs the refresh on a
         // 20s spawn timeout. Codex *usage* (tokens) is unaffected — it's parsed from log files.
 
         let icon = await companionIcon(disp)
         // Animated companion sprite (Gen-V GIF → frame HICONs). Reload only when species/shiny changes.
-        let animKey = disp.isEgg ? "egg" : (disp.speciesID.map { "\($0)-\(disp.isShiny)" } ?? "none")
+        let animKey = disp.visualSpeciesID.map { "\($0)-\(disp.visualIsShiny)" } ?? "egg"
         if lock.withLock({ animSpeciesKey != animKey && pendingAnimKey != animKey }) {
             var frames: [HICON] = []
-            if !disp.isEgg, let id = disp.speciesID,
-               let gif = await SpriteStore.shared.data(speciesID: id, animated: true, shiny: disp.isShiny) {
+            if let id = disp.visualSpeciesID,
+               let gif = await SpriteStore.shared.data(speciesID: id, animated: true, shiny: disp.visualIsShiny) {
                 frames = WindowsImaging.hiconsFromGIF(gif) ?? []
             }
             lock.withLock { pendingAnim = frames; pendingAnimKey = animKey }
@@ -303,6 +322,10 @@ enum WindowsTray {
         us.claudeToday = ct?.totalTokens ?? 0; us.claudeCost = ct?.totalCost ?? 0
         us.claudeIn = ct?.inputTokens ?? 0; us.claudeOut = ct?.outputTokens ?? 0
         us.claudeCacheW = ct?.cacheCreationTokens ?? 0; us.claudeCacheR = ct?.cacheReadTokens ?? 0
+        if let block = LocalUsageReader.activeBlock(entries: claude, now: now) {
+            us.claudeBlockTokens = block.totalTokens
+            us.claudeBlockTPM = block.tokensPerMinute ?? 0
+        }
         us.claude5h = claude5h; us.claude7d = claude7d
         us.claudeUsed = period(claude, monthStart).totalTokens > 0
         us.codexUsed = period(codex, monthStart).totalTokens > 0
@@ -379,12 +402,10 @@ enum WindowsTray {
 
     private static func companionIcon(_ disp: CompanionDisplay) async -> HICON? {
         let png: Data?
-        if disp.isEgg {
-            png = await SpriteStore.shared.eggData()
-        } else if let id = disp.speciesID {
-            png = await SpriteStore.shared.data(speciesID: id, animated: false, shiny: disp.isShiny)
+        if let id = disp.visualSpeciesID {
+            png = await SpriteStore.shared.data(speciesID: id, animated: false, shiny: disp.visualIsShiny)
         } else {
-            png = nil
+            png = await SpriteStore.shared.eggData()
         }
         guard let png else { return nil }
         return WindowsImaging.hicon(fromPNG: png)
@@ -420,7 +441,8 @@ enum WindowsTray {
         if showTok { parts.append("Claude \(TokenFormatter.compact(today?.totalTokens ?? 0)) today") }
         if showCost { parts.append(TokenFormatter.cost(today?.totalCost ?? 0)) }
         if showLim {
-            let lim = [claude5h.map { "5h \($0)%" }, claude7d.map { "7d \($0)%" }].compactMap { $0 }
+            let lim = [claude5h.map { "5h \(displayLimitPercent($0))%" },
+                       claude7d.map { "7d \(displayLimitPercent($0))%" }].compactMap { $0 }
             if !lim.isEmpty { parts.append("(\(lim.joined(separator: ", ")))") }
         }
         if !parts.isEmpty { lines.append(parts.joined(separator: " ")) }
@@ -514,6 +536,7 @@ enum WindowsTray {
         }
         nid.hIcon = displayedIcon()
         _ = Shell_NotifyIconW(DWORD(NIM_MODIFY), &nid)
+        WindowsFloatingPet.updateIcon(displayedIcon())
         if let popupHwnd, IsWindowVisible(popupHwnd) { InvalidateRect(popupHwnd, nil, true) }
         if let msg = lock.withLock({ let m = pendingAlert; pendingAlert = nil; return m }) {
             notify(title: "PokeTokenBar", message: msg)
@@ -537,6 +560,7 @@ enum WindowsTray {
         animIndex = (animIndex + 1) % animFrames.count
         nid.hIcon = animFrames[animIndex]
         _ = Shell_NotifyIconW(DWORD(NIM_MODIFY), &nid)
+        WindowsFloatingPet.updateIcon(animFrames[animIndex])
         if let popupHwnd, IsWindowVisible(popupHwnd), popupView == 0 {
             // Match the full-paint offset: the update banner shifts the whole Home view down, so the
             // incremental sprite redraw must shift too — otherwise it draws over the tabs.
@@ -678,7 +702,9 @@ enum WindowsTray {
         SelectObject(hdc, o); DeleteObject(tf)
         let bf = makeFont(-12, bold: true); let bo = SelectObject(hdc, bf)
         let get = RECT(left: popupWidth - 142, top: 10, right: popupWidth - 66, bottom: bannerHeight - 8)
-        drawButton(hdc, get, L("받기", "Get", "取得"), enabled: true, selected: true)
+        let getLabel = WindowsUpdate.automaticInstallerEnabled
+            ? L("받기", "Get", "取得") : L("열기", "Open", "開く")
+        drawButton(hdc, get, getLabel, enabled: true, selected: true)
         buttonHits.append((get, 30))
         let later = RECT(left: popupWidth - 60, top: 10, right: popupWidth - m, bottom: bannerHeight - 8)
         drawButton(hdc, later, L("나중에", "Later", "後で"), enabled: true, selected: false)
@@ -758,6 +784,14 @@ enum WindowsTray {
         return L("진화까지 \(n)", "\(n) to evolve", "進化まで\(n)")
     }
 
+    private static var showsRemainingLimits: Bool {
+        UserDefaults.standard.string(forKey: "limitDisplayMode") == "remaining"
+    }
+
+    private static func displayLimitPercent(_ used: Int) -> Int {
+        showsRemainingLimits ? max(0, 100 - used) : used
+    }
+
     private static func limitRow(_ hdc: HDC?, y: Int32, _ label: String, _ pct: Int?) {
         let lf = makeFont(-15, bold: true); let o = SelectObject(hdc, lf)
         SetTextColor(hdc, rgb(230, 230, 238))
@@ -766,10 +800,43 @@ enum WindowsTray {
         let p = pct ?? 0
         let color = p >= 90 ? rgb(232, 96, 96) : (p >= 70 ? rgb(232, 184, 72) : rgb(96, 200, 120))
         SetTextColor(hdc, pct == nil ? rgb(120, 120, 132) : color)
-        var pr = RECT(left: popupWidth - 96, top: y, right: popupWidth - 16, bottom: y + 22)
-        drawText(pct == nil ? "—" : "\(p)%", in: hdc, rect: &pr, format: UINT(DT_RIGHT | DT_SINGLELINE))
+        var pr = RECT(left: popupWidth - 116, top: y, right: popupWidth - 16, bottom: y + 22)
+        let pctText: String
+        if pct == nil { pctText = "—" }
+        else if showsRemainingLimits { pctText = "\(displayLimitPercent(p))% " + L("남음", "left", "残り") }
+        else { pctText = "\(p)%" }
+        drawText(pctText, in: hdc, rect: &pr, format: UINT(DT_RIGHT | DT_SINGLELINE))
         SelectObject(hdc, o); DeleteObject(lf)
+        // Color/bar always represent *used* utilization even when the numeric label is remaining.
         drawProgress(hdc, RECT(left: 20, top: y + 26, right: popupWidth - 16, bottom: y + 34), Double(p) / 100.0, color)
+    }
+
+    private static func drawProviderStatusBanner(_ hdc: HDC?, y: Int32, providerID: String, name: String) {
+        guard UserDefaults.standard.object(forKey: "statusChecksEnabled") as? Bool ?? true,
+              let status = lock.withLock({ providerStatuses[providerID] }), status.indicator.hasIssue else { return }
+        let label: String
+        switch status.indicator {
+        case .minor: label = L("일부 장애", "Minor issues", "一部障害")
+        case .major: label = L("장애", "Major outage", "障害")
+        case .critical: label = L("심각한 장애", "Critical outage", "重大障害")
+        case .maintenance: label = L("점검 중", "Maintenance", "メンテナンス")
+        case .unknown: label = L("상태 불명", "Status unknown", "状態不明")
+        case .operational: return
+        }
+        let r = RECT(left: 16, top: y, right: popupWidth - 16, bottom: y + 38)
+        fillRound(hdc, r, 9, rgb(74, 52, 42))
+        let f = makeFont(-12, bold: true); let o = SelectObject(hdc, f)
+        SetTextColor(hdc, rgb(246, 190, 130))
+        var tr = RECT(left: 26, top: y + 5, right: popupWidth - 24, bottom: y + 22)
+        drawText("⚠ \(name) · \(label)", in: hdc, rect: &tr, format: UINT(DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS))
+        SelectObject(hdc, o); DeleteObject(f)
+        if !status.description.isEmpty {
+            let sf = makeFont(-10, bold: false); let so = SelectObject(hdc, sf)
+            SetTextColor(hdc, rgb(190, 165, 145))
+            var sr = RECT(left: 26, top: y + 21, right: popupWidth - 24, bottom: y + 35)
+            drawText(status.description, in: hdc, rect: &sr, format: UINT(DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS))
+            SelectObject(hdc, so); DeleteObject(sf)
+        }
     }
 
     private static func paintHome(_ hdc: HDC?, _ disp: CompanionDisplay, _ u: UsageSnapshot) {
@@ -910,13 +977,27 @@ enum WindowsTray {
             drawText("\(inL) \(TokenFormatter.compact(u.claudeIn))   \(outL) \(TokenFormatter.compact(u.claudeOut))   cache w \(TokenFormatter.compact(u.claudeCacheW))   cache r \(TokenFormatter.compact(u.claudeCacheR))", in: hdc, rect: &brRect, format: UINT(DT_LEFT | DT_SINGLELINE))
             SelectObject(hdc, o); DeleteObject(brFont)
 
-            divider(hdc, 364 + evoH)
+            // Local rolling five-hour block — complements the official percent with the actual
+            // token volume observed in Claude logs on this machine/selected WSL distro.
+            let blockFont = makeFont(-11, bold: false); o = SelectObject(hdc, blockFont)
+            SetTextColor(hdc, rgb(145, 145, 158))
+            var blockRect = RECT(left: 20, top: 356 + evoH, right: popupWidth - 16, bottom: 376 + evoH)
+            let blockLabel = L("현재 5h 로컬 블록", "Current local 5h block", "現在のローカル5hブロック")
+            let blockRate = u.claudeBlockTPM > 0 ? " · \(TokenFormatter.compact(Int(u.claudeBlockTPM)))/min" : ""
+            drawText("\(blockLabel)  \(TokenFormatter.compact(u.claudeBlockTokens))\(blockRate)", in: hdc, rect: &blockRect,
+                     format: UINT(DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS))
+            SelectObject(hdc, o); DeleteObject(blockFont)
+
+            divider(hdc, 384 + evoH)
             SetTextColor(hdc, rgb(150, 150, 162))
             let liFont = makeFont(-13, bold: false); o = SelectObject(hdc, liFont)
-            var liRect = RECT(left: 20, top: 372 + evoH, right: popupWidth - 16, bottom: 392 + evoH); drawText(L("공식 한도", "Limits (official)", "公式リミット"), in: hdc, rect: &liRect, format: UINT(DT_LEFT | DT_SINGLELINE))
+            var liRect = RECT(left: 20, top: 392 + evoH, right: popupWidth - 16, bottom: 412 + evoH); drawText(L("공식 한도", "Limits (official)", "公式リミット"), in: hdc, rect: &liRect, format: UINT(DT_LEFT | DT_SINGLELINE))
             SelectObject(hdc, o); DeleteObject(liFont)
-            limitRow(hdc, y: 396 + evoH, L("5시간 세션", "5-hour session", "5時間セッション"), u.claude5h)
-            limitRow(hdc, y: 440 + evoH, L("주간", "Weekly", "週間"), u.claude7d)
+            limitRow(hdc, y: 416 + evoH, L("5시간 세션", "5-hour session", "5時間セッション"), u.claude5h)
+            limitRow(hdc, y: 460 + evoH, L("주간", "Weekly", "週間"), u.claude7d)
+            drawProviderStatusBanner(hdc, y: 506 + evoH, providerID: "claude_code", name: "Claude")
+        } else if sel == 1 {
+            drawProviderStatusBanner(hdc, y: 350 + evoH, providerID: "codex", name: "OpenAI")
         }
     }
 
@@ -1139,13 +1220,16 @@ enum WindowsTray {
             let saved = SaveDC(hdc)
             IntersectClipRect(hdc, 0, gridTop - 2, popupWidth, popupHeight - 68)
             let nameFont = makeFont(-10, bold: false); let nOld = SelectObject(hdc, nameFont)
+            let representativeID = lock.withLock { currentDisplay.representativeSpeciesID }
             for (i, item) in pageItems.enumerated() {
                 let col = Int32(i) % dexCols, row = Int32(i) / dexCols
                 let cx = 12 + col * cellW
                 let cy = gridTop + row * cellH
-                if item.isRaising {
-                    fillRound(hdc, RECT(left: cx + 4, top: cy, right: cx + cellW - 4, bottom: cy + cellH - 4),
-                              10, rgb(38, 54, 70))
+                let cellRect = RECT(left: cx + 4, top: cy, right: cx + cellW - 4, bottom: cy + cellH - 4)
+                if item.speciesID == representativeID {
+                    fillRound(hdc, cellRect, 10, rgb(54, 84, 122))
+                } else if item.isRaising {
+                    fillRound(hdc, cellRect, 10, rgb(38, 54, 70))
                 }
                 if let ic = lock.withLock({ dexIcons[item.speciesID] }) {
                     DrawIconEx(hdc, cx + (cellW - 40) / 2, cy + 2, ic, 40, 40, 0, nil, UINT(DI_NORMAL))
@@ -1161,6 +1245,7 @@ enum WindowsTray {
                 var nr = RECT(left: cx + 2, top: cy + 43, right: cx + cellW - 2, bottom: cy + 61)
                 let label = (item.isShiny ? "* " : "") + item.name
                 drawText(label, in: hdc, rect: &nr, format: UINT(DT_CENTER | DT_SINGLELINE | DT_END_ELLIPSIS))
+                buttonHits.append((cellRect, 4000 + item.speciesID))
             }
             SelectObject(hdc, nOld); DeleteObject(nameFont)
             RestoreDC(hdc, saved)
@@ -1261,7 +1346,7 @@ enum WindowsTray {
         // ===== General =====
         settingsLabel(hdc, y, L("일반", "General", "一般")); y += 24
         let wslOptions = [L("Windows files only", "Windows files only", "Windows files only")] + WSLUsage.installedDistributions
-        let genH = 8 + rowH * 4 + (openDropdown == 1 ? optH * 3 : 0) + (openDropdown == 2 ? optH * 5 : 0) + (openDropdown == 3 ? optH * Int32(wslOptions.count) : 0)
+        let genH = 8 + rowH * 7 + (openDropdown == 1 ? optH * 3 : 0) + (openDropdown == 2 ? optH * 5 : 0) + (openDropdown == 3 ? optH * Int32(wslOptions.count) : 0) + (openDropdown == 4 ? optH * 3 : 0)
         drawCard(hdc, y, genH)
         var ry = y + 4
         let langName = disp.languageCode == "ko" ? "한국어" : (disp.languageCode == "ja" ? "日本語" : "English")
@@ -1271,6 +1356,19 @@ enum WindowsTray {
                 drawOptionRow(hdc, ry, label, selected: disp.languageCode == code, action: act); ry += optH
             }
         }
+        let representativeText = disp.representativeSpeciesID.map { id in
+            let name = disp.representativeName.isEmpty ? "#\(id)" : "#\(id) \(disp.representativeName)"
+            return name
+        } ?? L("현재 포켓몬 따라가기", "Follow current Pokémon", "現在のポケモンを追従")
+        drawActionRow(hdc, ry, L("대표 포켓몬", "Representative Pokémon", "代表ポケモン"),
+                      button: L("도감 선택", "Choose in Dex", "図鑑で選択"), action: 67)
+        // Show the current choice as a small secondary line without consuming another settings row.
+        let rf = makeFont(-10, bold: false); let ro = SelectObject(hdc, rf)
+        SetTextColor(hdc, rgb(130, 150, 170))
+        var rr = RECT(left: 28, top: ry + 27, right: popupWidth - 130, bottom: ry + 40)
+        drawText(representativeText, in: hdc, rect: &rr, format: UINT(DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS))
+        SelectObject(hdc, ro); DeleteObject(rf)
+        ry += rowH
         let sec = d.object(forKey: "refreshIntervalSec") as? Int ?? 120
         drawDropdownHeader(hdc, ry, L("새로고침 간격", "Refresh interval", "更新間隔"), value: intervalLabel(sec), open: openDropdown == 2, action: 61); ry += rowH
         if openDropdown == 2 {
@@ -1278,6 +1376,16 @@ enum WindowsTray {
                 drawOptionRow(hdc, ry, intervalLabel(p), selected: sec == p, action: 70 + i); ry += optH
             }
         }
+        let animation = d.string(forKey: "animationQuality") ?? "powerSaver"
+        drawDropdownHeader(hdc, ry, L("애니메이션 품질", "Animation quality", "アニメーション品質"),
+                           value: animationQualityLabel(animation), open: openDropdown == 4, action: 63); ry += rowH
+        if openDropdown == 4 {
+            for (i, value) in ["powerSaver", "balanced", "smooth"].enumerated() {
+                drawOptionRow(hdc, ry, animationQualityLabel(value), selected: animation == value, action: 200 + i); ry += optH
+            }
+        }
+        drawSwitchRow(hdc, ry, L("남은 한도로 표시", "Show remaining limits", "残り上限を表示"),
+                      sub: nil, on: showsRemainingLimits, action: 58); ry += rowH
         let wslValue = WSLUsage.selectedDistribution ?? wslOptions[0]
         drawDropdownHeader(hdc, ry, L("WSL 배포판", "WSL distribution", "WSL ディストリビューション"), value: wslValue, open: openDropdown == 3, action: 62); ry += rowH
         if openDropdown == 3 {
@@ -1287,6 +1395,19 @@ enum WindowsTray {
         }
         drawSwitchRow(hdc, ry, L("로그인 시 자동 시작", "Launch at login", "ログイン時に起動"), sub: nil, on: WindowsAutostart.isEnabled(), action: 53)
         y += genH + 12
+
+        // ===== Floating pet =====
+        settingsLabel(hdc, y, L("플로팅 펫", "Floating pet", "フローティングペット")); y += 24
+        let petH = 8 + rowH * 2
+        drawCard(hdc, y, petH)
+        ry = y + 4
+        let petEnabled = d.object(forKey: "floatingPetEnabled") as? Bool ?? false
+        drawSwitchRow(hdc, ry, L("데스크톱에 표시", "Show on desktop", "デスクトップに表示"),
+                      sub: L("드래그로 이동 · 클릭하면 앱 열기", "Drag to move · click to open", "ドラッグで移動・クリックで開く"),
+                      on: petEnabled, action: 64); ry += rowH
+        let petSize = Int(d.object(forKey: "floatingPetSize") as? Double ?? 96)
+        drawStepRow(hdc, ry, L("크기", "Size", "サイズ"), value: "\(petSize)px", minusAction: 65, plusAction: 66)
+        y += petH + 12
 
         // ===== Show in tray tooltip (the Windows analog of the macOS menu-bar display options) =====
         settingsLabel(hdc, y, L("트레이 툴팁에 표시", "Show in tray tooltip", "トレイのツールチップに表示")); y += 24
@@ -1301,7 +1422,7 @@ enum WindowsTray {
         // ===== Notifications =====
         settingsLabel(hdc, y, L("알림", "Notifications", "通知")); y += 24
         let limitOn = d.object(forKey: "limitAlertsEnabled") as? Bool ?? true
-        let notifH = 8 + rowH + 48 + (limitOn ? 68 : 0)
+        let notifH = 8 + rowH * 2 + 48 + (limitOn ? 68 : 0)
         drawCard(hdc, y, notifH)
         ry = y + 4
         drawSwitchRow(hdc, ry, L("한도 알림", "Limit alerts", "上限アラート"), sub: nil, on: limitOn, action: 54); ry += rowH
@@ -1311,20 +1432,29 @@ enum WindowsTray {
         }
         drawSwitchRow(hdc, ry, L("Companion 이벤트", "Companion events", "コンパニオンイベント"),
                       sub: L("부화 · 진화 · 졸업", "Hatch · evolve · graduate", "孵化・進化・卒業"),
-                      on: d.object(forKey: "companionNotifications") as? Bool ?? true, action: 13)
+                      on: d.object(forKey: "companionNotifications") as? Bool ?? true, action: 13); ry += 48
+        drawSwitchRow(hdc, ry, L("프로바이더 상태 확인", "Provider status checks", "プロバイダー状態確認"),
+                      sub: L("Claude · OpenAI 장애를 표시", "Show Claude / OpenAI incidents", "Claude・OpenAI の障害を表示"),
+                      on: d.object(forKey: "statusChecksEnabled") as? Bool ?? true, action: 59)
         y += notifH + 12
 
-        // ===== Version =====
-        settingsLabel(hdc, y, L("버전", "Version", "バージョン")); y += 22
-        let upToDate = lock.withLock { availableUpdate } == nil
-        let vf = makeFont(-14, bold: false); let vo = SelectObject(hdc, vf)
-        SetTextColor(hdc, upToDate ? rgb(150, 150, 160) : rgb(120, 180, 130))
-        var vr = RECT(left: 24, top: y, right: popupWidth - 24, bottom: y + 22)
-        let vtext = upToDate ? WindowsUpdate.currentVersion
-                             : "\(WindowsUpdate.currentVersion) → \(lock.withLock { availableUpdate }?.version ?? "")"
-        drawText(vtext, in: hdc, rect: &vr, format: UINT(DT_LEFT | DT_SINGLELINE))
-        SelectObject(hdc, vo); DeleteObject(vf)
-        y += 28
+        // ===== Updates =====
+        settingsLabel(hdc, y, L("업데이트", "Updates", "アップデート")); y += 22
+        drawCard(hdc, y, 8 + rowH)
+        let latest = lock.withLock { availableUpdate }
+        let versionText = latest.map { "\(WindowsUpdate.currentVersion) → \($0.version)" } ?? WindowsUpdate.currentVersion
+        drawActionRow(hdc, y + 4, versionText,
+                      button: L("지금 확인", "Check now", "今すぐ確認"), action: 402)
+        y += 8 + rowH + 12
+
+        // ===== About & Support =====
+        settingsLabel(hdc, y, L("정보 & 지원", "About & Support", "情報とサポート")); y += 22
+        drawCard(hdc, y, 8 + rowH * 2)
+        drawActionRow(hdc, y + 4, L("로그 파일 보기", "Show log file", "ログファイルを表示"),
+                      button: L("열기", "Open", "開く"), action: 400)
+        drawActionRow(hdc, y + 4 + rowH, L("문제점 알리기", "Report a problem", "問題を報告"),
+                      button: L("메일", "Email", "メール"), action: 401)
+        y += 8 + rowH * 2 + 12
 
         RestoreDC(hdc, saved)
         settingsContentH = (y + settingsScroll) - top   // total content height (for scroll clamping)
@@ -1342,6 +1472,37 @@ enum WindowsTray {
     /// Rounded settings card background.
     private static func drawCard(_ hdc: HDC?, _ top: Int32, _ height: Int32) {
         fillRound(hdc, RECT(left: 16, top: top, right: popupWidth - 16, bottom: top + height), 14, rgb(32, 32, 38))
+    }
+
+    private static func drawStepRow(_ hdc: HDC?, _ y: Int32, _ label: String, value: String,
+                                    minusAction: Int, plusAction: Int) {
+        let lf = makeFont(-14, bold: false); var o = SelectObject(hdc, lf)
+        SetTextColor(hdc, rgb(214, 214, 222))
+        var lr = RECT(left: 28, top: y, right: popupWidth - 170, bottom: y + setRowH)
+        drawText(label, in: hdc, rect: &lr, format: UINT(DT_LEFT | DT_VCENTER | DT_SINGLELINE))
+        SelectObject(hdc, o); DeleteObject(lf)
+        let vf = makeFont(-12, bold: true); o = SelectObject(hdc, vf)
+        SetTextColor(hdc, rgb(190, 200, 215))
+        var vr = RECT(left: popupWidth - 166, top: y, right: popupWidth - 96, bottom: y + setRowH)
+        drawText(value, in: hdc, rect: &vr, format: UINT(DT_CENTER | DT_VCENTER | DT_SINGLELINE))
+        SelectObject(hdc, o); DeleteObject(vf)
+        let minus = RECT(left: popupWidth - 92, top: y + 7, right: popupWidth - 62, bottom: y + setRowH - 7)
+        let plus = RECT(left: popupWidth - 58, top: y + 7, right: popupWidth - 28, bottom: y + setRowH - 7)
+        drawButton(hdc, minus, "−", enabled: true); drawButton(hdc, plus, "+", enabled: true)
+        buttonHits.append((minus, minusAction)); buttonHits.append((plus, plusAction))
+    }
+
+    private static func drawActionRow(_ hdc: HDC?, _ y: Int32, _ label: String, button: String, action: Int) {
+        let lf = makeFont(-14, bold: false); var o = SelectObject(hdc, lf)
+        SetTextColor(hdc, rgb(214, 214, 222))
+        var lr = RECT(left: 28, top: y, right: popupWidth - 126, bottom: y + setRowH)
+        drawText(label, in: hdc, rect: &lr, format: UINT(DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS))
+        SelectObject(hdc, o); DeleteObject(lf)
+        let bf = makeFont(-12, bold: true); o = SelectObject(hdc, bf)
+        let br = RECT(left: popupWidth - 118, top: y + 7, right: popupWidth - 28, bottom: y + setRowH - 7)
+        drawButton(hdc, br, button, enabled: true)
+        buttonHits.append((br, action))
+        SelectObject(hdc, o); DeleteObject(bf)
     }
 
     /// Row: label (+ optional subtitle) on the left, a macOS-style toggle switch on the right.
@@ -1412,6 +1573,81 @@ enum WindowsTray {
         drawText("\(value)%", in: hdc, rect: &pr, format: UINT(DT_RIGHT | DT_VCENTER | DT_SINGLELINE))
         SelectObject(hdc, o); DeleteObject(pf)
         buttonHits.append((RECT(left: trackL, top: y - 4, right: trackR, bottom: y + 28), action))   // click target = track
+    }
+
+    private static func animationQualityLabel(_ value: String) -> String {
+        switch value {
+        case "powerSaver": return L("절전", "Power saver", "省電力")
+        case "smooth": return L("부드럽게", "Smooth", "スムーズ")
+        default: return L("균형", "Balanced", "バランス")
+        }
+    }
+
+    private static func animationIntervalMS() -> UINT {
+        switch UserDefaults.standard.string(forKey: "animationQuality") ?? "powerSaver" {
+        case "powerSaver": return 400
+        case "smooth": return 100
+        default: return 200
+        }
+    }
+
+    private static func applyAnimationQuality() {
+        guard let sinkHwnd else { return }
+        _ = KillTimer(sinkHwnd, animTimerID)
+        _ = SetTimer(sinkHwnd, animTimerID, animationIntervalMS(), nil)
+    }
+
+    private static func selectAnimationQuality(_ index: Int) {
+        let values = ["powerSaver", "balanced", "smooth"]
+        guard values.indices.contains(index) else { return }
+        UserDefaults.standard.set(values[index], forKey: "animationQuality")
+        openDropdown = 0
+        applyAnimationQuality()
+        if let popupHwnd { InvalidateRect(popupHwnd, nil, true) }
+    }
+
+    private static func toggleLimitDisplayMode() {
+        UserDefaults.standard.set(showsRemainingLimits ? "used" : "remaining", forKey: "limitDisplayMode")
+        if let popupHwnd { InvalidateRect(popupHwnd, nil, true) }
+        scheduleRefresh()
+    }
+
+    private static func toggleStatusChecks() {
+        let d = UserDefaults.standard
+        let on = d.object(forKey: "statusChecksEnabled") as? Bool ?? true
+        d.set(!on, forKey: "statusChecksEnabled")
+        if on { lock.withLock { providerStatuses.removeAll() } }
+        else { lock.withLock { lastStatusFetch = nil }; scheduleRefresh() }
+        if let popupHwnd { InvalidateRect(popupHwnd, nil, true) }
+    }
+
+    private static func toggleFloatingPet() {
+        let d = UserDefaults.standard
+        let on = d.object(forKey: "floatingPetEnabled") as? Bool ?? false
+        d.set(!on, forKey: "floatingPetEnabled")
+        WindowsFloatingPet.syncSettings()
+        if let popupHwnd { InvalidateRect(popupHwnd, nil, true) }
+    }
+
+    private static func adjustFloatingPetSize(_ delta: Int) {
+        let d = UserDefaults.standard
+        let old = d.object(forKey: "floatingPetSize") as? Double ?? 96
+        let next = Double(WindowsFloatingPet.clampedSize(old + Double(delta)))
+        d.set(next, forKey: "floatingPetSize")
+        WindowsFloatingPet.syncSettings()
+        if let popupHwnd { InvalidateRect(popupHwnd, nil, true) }
+    }
+
+    private static func selectRepresentative(_ speciesID: Int) {
+        guard let companion else { return }
+        Task {
+            let current = await companion.representativeSpeciesID
+            _ = await companion.setRepresentativeSpeciesID(current == speciesID ? nil : speciesID)
+            let disp = await companion.windowsDisplay
+            lock.withLock { currentDisplay = disp }
+            if let popupHwnd { InvalidateRect(popupHwnd, nil, true) }
+            scheduleRefresh()   // refresh tray/floating sprite to the selected visual subject
+        }
     }
 
     private static func intervalLabel(_ sec: Int) -> String {
@@ -1555,11 +1791,21 @@ enum WindowsTray {
             case 55: toggleTip("tipShowTokens")
             case 56: toggleTip("tipShowCost")
             case 57: toggleTip("tipShowLimit")
+            case 58: toggleLimitDisplayMode()
+            case 59: toggleStatusChecks()
             case 60: toggleDropdown(1)   // language dropdown
             case 61: toggleDropdown(2)   // interval dropdown
             case 62: toggleDropdown(3)   // WSL distribution dropdown
+            case 63: toggleDropdown(4)   // animation quality dropdown
+            case 64: toggleFloatingPet()
+            case 65: adjustFloatingPetSize(-16)
+            case 66: adjustFloatingPetSize(16)
+            case 67:
+                popupView = 3; dexMode = 0; dexFilter = 0; dexPage = 0; dexScroll = 0
+                if let popupHwnd { InvalidateRect(popupHwnd, nil, true) }
             case 70...74: selectInterval(action - 70)   // interval preset
             case 80...199: selectWSL(action - 80)
+            case 200...202: selectAnimationQuality(action - 200)
             case 300, 301:
                 dexMode = action - 300; dexScroll = 0; dexPage = 0
                 if let popupHwnd { InvalidateRect(popupHwnd, nil, true) }
@@ -1570,6 +1816,11 @@ enum WindowsTray {
                 dexPage = max(0, dexPage - 1); if let popupHwnd { InvalidateRect(popupHwnd, nil, true) }
             case 321:
                 dexPage += 1; if let popupHwnd { InvalidateRect(popupHwnd, nil, true) }
+            case 4000...4999:
+                selectRepresentative(action - 4000)
+            case 400: openLogFile()
+            case 401: reportProblem()
+            case 402: manualUpdateCheck()
             default: doAction(action)
             }
             return
@@ -1610,6 +1861,10 @@ enum WindowsTray {
     /// fails — e.g. `gh` not installed, no matching asset, or a non-writable install dir.
     private static func applyUpdate() {
         guard let upd = lock.withLock({ availableUpdate }) else { return }
+        if !WindowsUpdate.automaticInstallerEnabled {
+            WindowsUpdate.openReleasePage(upd.url)
+            return
+        }
         // Guard against double-clicks; flip on the full-cover overlay immediately for instant feedback.
         let start = lock.withLock { () -> Bool in if updating { return false }; updating = true; updateDots = 0; return true }
         guard start else { return }
@@ -1697,6 +1952,42 @@ enum WindowsTray {
         return WindowsProcess(commandLine: "\"\(comspec)\" /c \"\(cmdPath)\"",
                               stdoutPath: tmp.appendingPathComponent("ptb-apply-\(pid).out").path,
                               stderrPath: tmp.appendingPathComponent("ptb-apply-\(pid).err").path)?.launched ?? false
+    }
+
+    private static func openLogFile() {
+        let url = AppLog.logFileURL
+        if FileManager.default.fileExists(atPath: url.path) {
+            let exe = "explorer.exe".wide
+            let params = "/select,\"\(url.path)\"".wide
+            _ = exe.withUnsafeBufferPointer { e in
+                params.withUnsafeBufferPointer { p in ShellExecuteW(nil, nil, e.baseAddress, p.baseAddress, nil, 1) }
+            }
+        } else {
+            let folder = url.deletingLastPathComponent().path.wide
+            _ = folder.withUnsafeBufferPointer { p in ShellExecuteW(nil, nil, p.baseAddress, nil, nil, 1) }
+        }
+    }
+
+    private static func reportProblem() {
+        let log = AppLog.logFileURL.path
+        let subject = L("[PokeTokenBar] 문제 리포트 (v\(WindowsUpdate.currentVersion))",
+                        "[PokeTokenBar] Problem report (v\(WindowsUpdate.currentVersion))",
+                        "[PokeTokenBar] 問題レポート (v\(WindowsUpdate.currentVersion))")
+        let body = L("문제 내용:\n(언제, 어떤 화면에서, 어떻게 되었는지 적어주세요)\n\n---\nWindows 앱: v\(WindowsUpdate.currentVersion)\n로그 파일(첨부 권장): \(log)",
+                     "What happened:\n(Describe when, where, and what you saw)\n\n---\nWindows app: v\(WindowsUpdate.currentVersion)\nLog file (please attach): \(log)",
+                     "問題の内容:\n（いつ・どの画面で・どうなったか）\n\n---\nWindows アプリ: v\(WindowsUpdate.currentVersion)\nログファイル（添付推奨）: \(log)")
+        guard let url = SupportMail.mailtoURL(subject: subject, body: body) else { return }
+        let target = url.absoluteString.wide
+        _ = target.withUnsafeBufferPointer { p in ShellExecuteW(nil, nil, p.baseAddress, nil, nil, 1) }
+    }
+
+    private static func manualUpdateCheck() {
+        lock.withLock { lastUpdateCheck = Date() }
+        Task.detached {
+            let upd = await WindowsUpdate.check()
+            lock.withLock { availableUpdate = upd }
+            resizePopupForBanner()
+        }
     }
 
     private static func doAction(_ id: Int) {
@@ -1832,6 +2123,11 @@ struct CompanionDisplay: Sendable {
     var rarityText: String?
     var isShiny = false
     var speciesID: Int?
+    // Visual subject for tray/floating pet. Representative selection may differ from current companion.
+    var visualSpeciesID: Int?
+    var visualIsShiny = false
+    var representativeSpeciesID: Int?
+    var representativeName = ""
     // Shop / inventory / dex (for the interactive popover actions).
     var wallet = 0
     var candyCount = 0
@@ -1886,6 +2182,8 @@ struct UsageSnapshot: Sendable {
     var todayCost = 0.0, weekCost = 0.0, monthCost = 0.0
     var claudeToday = 0; var claudeCost = 0.0
     var claudeIn = 0, claudeOut = 0, claudeCacheW = 0, claudeCacheR = 0
+    var claudeBlockTokens = 0
+    var claudeBlockTPM = 0.0
     var claude5h: Int?, claude7d: Int?
     // month usage > 0 → provider pill visibility. OpenCode/Hermes are SQLite-backed (macOS system
     // SQLite3 / vendored CSQLite on Windows) — read only where that module exists.
@@ -1972,6 +2270,11 @@ extension CompanionStore {
             displayName: displayName, stageText: stageText, natureText: currentNature.map { $0.name(language) } ?? "",
             isFinalStage: isFinalStage, tokensToNext: tokensToNext,
             rarityText: rarity.map { String(describing: $0) }, isShiny: currentIsShiny, speciesID: currentSpeciesID,
+            visualSpeciesID: representativeVisualSpeciesID, visualIsShiny: representativeVisualIsShiny,
+            representativeSpeciesID: representativeSpeciesID,
+            representativeName: representativeSpeciesID.flatMap { selected in
+                dexSpecies.first(where: { $0.id == selected })?.name
+            } ?? "",
             wallet: availableTokens, candyCount: rareCandyCount, mintCount: itemCount(.mint), dexCount: dexEntries.count,
             canUseCandy: canUseRareCandy, canUseMint: canUseMint,
             canBuyCandy: canBuyRareCandy, canBuyCharm: canBuy(.shinyCharm), canBuyEgg: canBuyFreshEgg,

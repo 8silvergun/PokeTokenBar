@@ -44,14 +44,20 @@ struct StatuspageStatusProvider: ProviderStatusProviding {
 
     func fetch() async -> [String: ProviderStatus] {
         var out: [String: ProviderStatus] = [:]
+        #if os(Windows)
+        // Windows corelibs URLSession has previously been unstable under overlapping companion/status
+        // requests in this app. Two status pages every few minutes do not benefit from parallelism.
+        for (id, url) in Self.endpoints {
+            if let status = await Self.fetchOne(url) { out[id] = status }
+        }
+        #else
         await withTaskGroup(of: (String, ProviderStatus?).self) { group in
             for (id, url) in Self.endpoints {
                 group.addTask { (id, await Self.fetchOne(url)) }
             }
-            for await (id, status) in group where status != nil {
-                out[id] = status
-            }
+            for await (id, status) in group where status != nil { out[id] = status }
         }
+        #endif
         return out
     }
 
