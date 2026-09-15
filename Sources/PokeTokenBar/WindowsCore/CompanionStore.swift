@@ -138,18 +138,109 @@ final class CompanionStore {
         }
         return out
     }
-    var dexEntries: [DexEntry] { state.dex }
-
-    var dexEntriesSorted: [DexEntry] {
-        state.dex.sorted { a, b in
-            if a.rarity.sortRank != b.rarity.sortRank { return a.rarity.sortRank > b.rarity.sortRank }
-            let ta = a.caughtAt ?? .distantPast
-            let tb = b.caughtAt ?? .distantPast
-            return ta > tb
-        }
+    /// 현재 육성 개체를 영속 dex에 중복 저장하지 않고 Catch Log 화면용 항목으로 합성한다.
+    private var activeDexEntry: DexEntry? {
+        guard let active = state.active else { return nil }
+        let reached = Array(active.pathIDs.prefix(max(1, active.stageIndex + 1)))
+        let chain = reached.isEmpty ? [active.baseID] : reached
+        return DexEntry(
+            id: "active-\(active.baseID)-\(active.currentID)",
+            baseID: active.baseID,
+            finalID: active.currentID,
+            chainOrder: chain,
+            rarity: active.rarity,
+            caughtAt: nil,
+            isShiny: currentIsShiny,
+            nature: active.nature,
+            names: currentLine.map { line in
+                Dictionary(uniqueKeysWithValues:
+                    chain.compactMap { id in line.names[id].map { (id, $0) } })
+            })
     }
 
-    func dexCount(_ rarity: Rarity) -> Int { state.dex.lazy.filter { $0.rarity == rarity }.count }
+    /// fresh/premium egg 구매로 놓아준 개체의 영구 기록. 실제 도달한 형태만 남긴다.
+    private func releasedDexEntry(from active: MonState) -> DexEntry {
+        let reached = Array(active.pathIDs.prefix(max(1, active.stageIndex + 1)))
+        let chain = reached.isEmpty ? [active.baseID] : reached
+        let now = clock()
+        return DexEntry(
+            baseID: active.baseID,
+            finalID: chain.last ?? active.baseID,
+            chainOrder: chain,
+            rarity: active.rarity,
+            caughtAt: now,
+            isShiny: currentIsShiny,
+            nature: active.nature,
+            names: currentLine.map { line in
+                Dictionary(uniqueKeysWithValues:
+                    chain.compactMap { id in line.names[id].map { (id, $0) } })
+            },
+            releasedAt: now)
+    }
+
+    var dexEntries: [DexEntry] {
+        guard let activeDexEntry else { return state.dex }
+        return state.dex + [activeDexEntry]
+    }
+
+    func isActiveDexEntry(_ entry: DexEntry) -> Bool {
+        entry.id == activeDexEntry?.id
+    }
+
+    /// Catch Log는 현재 개체를 맨 앞에, 나머지는 기록 시각 최신순으로 보여준다.
+    var dexEntriesSorted: [DexEntry] {
+        let stored = state.dex.sorted {
+            ($0.caughtAt ?? .distantPast) > ($1.caughtAt ?? .distantPast)
+        }
+        guard let activeDexEntry else { return stored }
+        return [activeDexEntry] + stored
+    }
+
+    func dexCount(_ rarity: Rarity) -> Int { dexEntries.lazy.filter { $0.rarity == rarity }.count }
+
+    /// species-based Pokédex 한 칸. 같은 종의 여러 개체/기록은 한 칸으로 접힌다.
+    struct DexSpecies: Identifiable, Sendable {
+        let id: Int
+        let name: String
+        let rarity: Rarity
+        let isShiny: Bool
+        let isRaising: Bool
+    }
+
+    private struct DexAccumulator {
+        let rarity: Rarity
+        var names: [String: String]?
+        var isShiny = false
+    }
+
+    /// 영구 기록의 chainOrder + 현재 개체가 실제 도달한 path prefix를 합쳐 종 번호순으로 만든다.
+    var dexSpecies: [DexSpecies] {
+        var acc: [Int: DexAccumulator] = [:]
+        for entry in state.dex {
+            for id in entry.chainOrder {
+                var item = acc[id] ?? DexAccumulator(rarity: entry.rarity)
+                if let names = entry.names?[id] { item.names = names }
+                if entry.isShiny { item.isShiny = true }
+                acc[id] = item
+            }
+        }
+        if let active = state.active {
+            for id in active.pathIDs.prefix(max(1, active.stageIndex + 1)) {
+                var item = acc[id] ?? DexAccumulator(rarity: active.rarity)
+                if let names = currentLine?.names[id] { item.names = names }
+                if currentIsShiny { item.isShiny = true }
+                acc[id] = item
+            }
+        }
+        return acc.sorted { $0.key < $1.key }.map { id, item in
+            DexSpecies(
+                id: id,
+                name: item.names.flatMap { state.language.resolveName($0) } ?? "#\(id)",
+                rarity: item.rarity,
+                isShiny: item.isShiny,
+                isRaising: id == state.active?.currentID)
+        }
+    }
 
     func dexStoredChainNames(_ entry: DexEntry) -> [Int: String]? {
         guard let names = entry.names, !names.isEmpty else { return nil }
@@ -398,6 +489,10 @@ final class CompanionStore {
     func buyEgg(_ tier: Rarity?) -> Bool {
         guard canBuyEgg(tier) else { return false }
         state.spentTokens += FreshEgg.price(guaranteeing: tier)
+        if let active = state.active {
+            // 놓아준 개체도 수집 기록에 남긴다. 졸업은 아니므로 collectedFinals에는 손대지 않는다.
+            state.dex.append(releasedDexEntry(from: active))
+        }
         state.active = nil
         currentLine = nil
         state.eggUsage = 0

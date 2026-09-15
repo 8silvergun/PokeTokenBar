@@ -356,24 +356,26 @@ struct MonState: Codable, Sendable {
     }
 }
 
-/// 도감 항목 — 라인 전체(초기→최종) 순서 보존.
+/// 도감/포획 로그 항목 — 라인 전체(초기→현재/최종) 순서 보존.
 struct DexEntry: Codable, Sendable, Identifiable {
     var id = UUID().uuidString
     var baseID: Int
     var finalID: Int
-    var chainOrder: [Int]   // 초기→최종 종 id
+    var chainOrder: [Int]
     var rarity: Rarity
     var caughtAt: Date?
     var isShiny = false
     var nature: PokemonNature?
-    /// 진화 체인 각 종의 다국어 이름(speciesID → langCode → name). 졸업 시 로드된 라인에서 저장 →
-    /// 도감의 단계별 스프라이트 밑 이름 표시가 네트워크 없이 즉시 + 언어 전환 대응. 구버전 저장분엔
-    /// 없어(nil) 뷰가 line fetch 로 조회 후 백필한다.
     var names: [Int: [String: String]]?
+    /// 새 알 구매로 육성을 중단한 시각. nil이면 졸업 기록(또는 구버전 기록).
+    var releasedAt: Date?
+    var isReleased: Bool { releasedAt != nil }
 
-    init(baseID: Int, finalID: Int, chainOrder: [Int], rarity: Rarity,
+    init(id: String = UUID().uuidString,
+         baseID: Int, finalID: Int, chainOrder: [Int], rarity: Rarity,
          caughtAt: Date?, isShiny: Bool = false, nature: PokemonNature? = nil,
-         names: [Int: [String: String]]? = nil) {
+         names: [Int: [String: String]]? = nil, releasedAt: Date? = nil) {
+        self.id = id
         self.baseID = baseID
         self.finalID = finalID
         self.chainOrder = chainOrder
@@ -382,9 +384,10 @@ struct DexEntry: Codable, Sendable, Identifiable {
         self.isShiny = isShiny
         self.nature = nature
         self.names = names
+        self.releasedAt = releasedAt
     }
 
-    // 하위호환 디코딩 (MonState 와 동일 이유).
+    // releasedAt 이전 세이브는 nil(=졸업)로 읽어 그대로 호환한다.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
@@ -395,9 +398,8 @@ struct DexEntry: Codable, Sendable, Identifiable {
         caughtAt = try c.decodeIfPresent(Date.self, forKey: .caughtAt)
         isShiny = try c.decodeIfPresent(Bool.self, forKey: .isShiny) ?? false
         nature = try c.decodeIfPresent(PokemonNature.self, forKey: .nature)
-        // try? — 구버전(최종체 단일 [String:String]) 형식이 남아 있어도 종별 맵 디코딩 실패 시 nil 로
-        // 강등(항목 전체 로드는 유지). 뷰가 line 조회로 백필한다.
         names = (try? c.decodeIfPresent([Int: [String: String]].self, forKey: .names)) ?? nil
+        releasedAt = try c.decodeIfPresent(Date.self, forKey: .releasedAt)
     }
 }
 
