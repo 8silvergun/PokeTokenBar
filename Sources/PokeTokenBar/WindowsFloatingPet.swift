@@ -120,8 +120,9 @@ enum WindowsFloatingPet {
         return POINT(x: min(maxX, max(wa.left, x)), y: min(maxY, max(wa.top, y)))
     }
 
-    private static func saveOrigin(_ hWnd: HWND) {
-        var wr = RECT(); guard GetWindowRect(hWnd, &wr) != 0 else { return }
+    private static func saveOrigin(_ hWnd: HWND?) {
+        guard let hWnd else { return }
+        var wr = RECT(); guard GetWindowRect(hWnd, &wr) else { return }
         let d = UserDefaults.standard
         d.set(Double(wr.left), forKey: originXKey)
         d.set(Double(wr.top), forKey: originYKey)
