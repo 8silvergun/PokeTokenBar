@@ -93,6 +93,21 @@ actor PokeAPIClient: PokeProviding {
             baseIndexCache = disk.entries
             return disk.entries
         }
+
+        #if os(Windows)
+        // 실기기에서 `eggUsage`가 5M을 훨씬 넘고 pendingHatchID가 nil인 채 유지되며,
+        // GraphQL/REST 실패 로그도 전혀 남지 않았다. 이 상태는 첫 GraphQL await 자체가 Windows
+        // corelibs Foundation에서 반환되지 않아 chooseBaseViaREST까지 도달하지 못하는 경우와 일치한다.
+        // Windows 부화는 GraphQL을 필수 경로에서 완전히 빼고, 캐시가 있으면 오래된 캐시라도 사용하고
+        // 없으면 즉시 throw해서 CompanionStore의 소규모 per-hatch REST rejection sampling으로 넘긴다.
+        if let disk, !disk.entries.isEmpty {
+            baseIndexCache = disk.entries
+            AppLog.write("base index: Windows using stale cached snapshot; GraphQL bypassed")
+            return disk.entries
+        }
+        AppLog.write("base index: Windows bypassing GraphQL; using per-hatch REST fallback")
+        throw URLError(.unsupportedURL)
+        #else
         do {
             let entries = try await fetchBaseIndex()
             baseIndexCache = entries
@@ -105,22 +120,15 @@ actor PokeAPIClient: PokeProviding {
                 baseIndexCache = disk.entries
                 return disk.entries
             }
-            // GraphQL 다운 + 캐시 없음 → macOS는 REST 인덱스를 백그라운드 구축한다. Windows에서는
-            // per-hatch REST 폴백과 동시에 6개씩 추가 요청을 띄우면 corelibs URLSession 불안정성을
-            // 다시 자극하므로 대량 백그라운드 구축을 생략한다. 현재 부화는 아래 caller의
-            // chooseBaseViaREST가 즉시 처리하고, GraphQL이 복구되면 정상 캐시 경로로 돌아온다.
-            #if os(Windows)
-            restBuildTried = true
-            AppLog.write("base index (GraphQL) failed, no cache — Windows uses per-hatch REST fallback only: \(error)")
-            #else
+            // GraphQL 다운 + 캐시 없음 → macOS는 REST 인덱스를 백그라운드 구축한다.
             if !restBuildTried {
                 restBuildTried = true
                 Task { await self.buildBaseIndexViaREST() }
             }
             AppLog.write("base index (GraphQL) failed, no cache — REST build triggered; per-hatch fallback handles now: \(error)")
-            #endif
             throw error
         }
+        #endif
     }
 
     /// GraphQL base 인덱스 엔드포인트 장애 시 REST(pokemon-species/{id})로 base 인덱스를 직접 구축·영속.
