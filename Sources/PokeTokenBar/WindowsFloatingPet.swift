@@ -54,7 +54,9 @@ enum WindowsFloatingPet {
             wc.hInstance = hInstance
             wc.hCursor = LoadCursorW(nil, UnsafePointer<WCHAR>(bitPattern: 32512))
             wc.lpszClassName = p.baseAddress
-            return RegisterClassExW(&wc) != 0 || GetLastError() == DWORD(ERROR_CLASS_ALREADY_EXISTS)
+            // Only one instance calls prepare(); if registration ever races, CreateWindowExW below
+            // is still the authoritative success/failure signal, so no imported ERROR_* constant needed.
+            return RegisterClassExW(&wc) != 0
         }
 
         let size = configuredSize
@@ -132,7 +134,7 @@ enum WindowsFloatingPet {
         }
         guard let sink else { return }
         if event == 0 { _ = PostMessageW(sink, message, 0, 0) }
-        else { _ = PostMessageW(sink, message, 0, LPARAM(event)) }
+        else { _ = PostMessageW(sink, message, 0, LPARAM(Int(event))) }
     }
 
     private static func openPopover() { postTrayMessage(UINT(WM_APP) + 3) }
@@ -141,7 +143,7 @@ enum WindowsFloatingPet {
     private static let windowProc: WNDPROC = { hWnd, uMsg, wParam, lParam in
         switch uMsg {
         case UINT(WM_TIMER):
-            if UINT_PTR(wParam) == WindowsFloatingPet.timerID { WindowsFloatingPet.syncSettings() }
+            if wParam == WPARAM(WindowsFloatingPet.timerID) { WindowsFloatingPet.syncSettings() }
             return 0
         case UINT(WM_ERASEBKGND):
             return 1
