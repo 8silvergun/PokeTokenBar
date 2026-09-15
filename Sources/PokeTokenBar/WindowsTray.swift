@@ -1989,12 +1989,7 @@ extension CompanionStore {
                              nature: e.nature.map { $0.name(language) } ?? "",
                              caughtAt: e.caughtAt, isReleased: e.isReleased, isRaising: isActiveDexEntry(e))
             },
-            lineNodes: hasActive ? lineNodes.compactMap { item in
-                guard case .species(let id) = item.content else { return nil }
-                let kind: String
-                switch item.state { case .done: kind = "done"; case .current: kind = "cur"; case .future: kind = "future" }
-                return EvoThumb(id: id, kind: kind)
-            } : [],
+            lineNodes: hasActive ? lineNodes.map { EvoThumb(id: $0.id, kind: $0.kind) } : [],
             languageCode: language.rawValue,
             progress: isEgg ? eggProgress : progress,
             shopEntries: shop, bagEntries: bag,
