@@ -1,0 +1,29 @@
+name: Apply Windows dex parity patch
+
+on:
+  push:
+    branches: [feat/windows-dex-parity]
+    paths:
+      - .github/workflows/windows-dex-self-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/windows-dex-parity
+          fetch-depth: 0
+      - name: Apply source patch
+        run: python scripts/windows_dex_patch.py
+      - name: Commit source and remove helpers
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Sources/PokeTokenBar/WindowsTray.swift
+          git rm scripts/windows_dex_patch.py .github/workflows/windows-dex-self-patch.yml
+          git commit -m "feat(windows): add collection dex and catch log parity"
+          git push origin HEAD:feat/windows-dex-parity
