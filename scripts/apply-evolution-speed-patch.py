@@ -6,8 +6,8 @@ store_path = Path("Sources/PokeTokenBar/Core/CompanionStore.swift")
 store = store_path.read_text()
 old_call = "PokemonBalance.phaseThreshold("
 count = store.count(old_call)
-if count != 3:
-    raise SystemExit(f"expected 3 CompanionStore phaseThreshold calls, found {count}")
+if count != 5:
+    raise SystemExit(f"expected 5 CompanionStore phaseThreshold calls, found {count}")
 store_path.write_text(store.replace(old_call, "EvolutionSpeedSettings.phaseThreshold("))
 
 
@@ -29,7 +29,7 @@ row_needle = '''            Divider()
 '''
 if settings.count(row_needle) != 1:
     raise SystemExit("SettingsView General-row insertion point changed")
-evolution_row = '''            Divider()
+evolution_row = r'''            Divider()
             groupRow {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(l.evolutionSpeedLabel)
@@ -94,7 +94,7 @@ enum EvolutionSpeedSettings {
 ''')
 
 
-Path("Sources/PokeTokenBar/Core/GrowthSpeedLocalization.swift").write_text('''extension L {
+Path("Sources/PokeTokenBar/Core/GrowthSpeedLocalization.swift").write_text(r'''extension L {
     var evolutionSpeedLabel: String {
         switch lang {
         case .ko: return "진화 속도"
@@ -119,7 +119,7 @@ Path("Sources/PokeTokenBar/Core/GrowthSpeedLocalization.swift").write_text('''ex
         }
     }
 
-    func evolutionSpeedMultiplier(_ value: Int) -> String { "\\(value)×" }
+    func evolutionSpeedMultiplier(_ value: Int) -> String { "\(value)×" }
 }
 ''')
 
