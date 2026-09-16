@@ -1346,7 +1346,7 @@ enum WindowsTray {
         // ===== General =====
         settingsLabel(hdc, y, L("일반", "General", "一般")); y += 24
         let wslOptions = [L("Windows files only", "Windows files only", "Windows files only")] + WSLUsage.installedDistributions
-        let genH = 8 + rowH * 7 + (openDropdown == 1 ? optH * 3 : 0) + (openDropdown == 2 ? optH * 5 : 0) + (openDropdown == 3 ? optH * Int32(wslOptions.count) : 0) + (openDropdown == 4 ? optH * 3 : 0)
+        let genH = 8 + rowH * 8 + (openDropdown == 1 ? optH * 3 : 0) + (openDropdown == 2 ? optH * 5 : 0) + (openDropdown == 3 ? optH * Int32(wslOptions.count) : 0) + (openDropdown == 4 ? optH * 3 : 0)
         drawCard(hdc, y, genH)
         var ry = y + 4
         let langName = disp.languageCode == "ko" ? "한국어" : (disp.languageCode == "ja" ? "日本語" : "English")
@@ -1384,6 +1384,8 @@ enum WindowsTray {
                 drawOptionRow(hdc, ry, animationQualityLabel(value), selected: animation == value, action: 200 + i); ry += optH
             }
         }
+        drawStepRow(hdc, ry, L("진화 속도", "Evolution speed", "進化速度"),
+                    value: "\(EvolutionSpeedSettings.multiplier)×", minusAction: 68, plusAction: 69); ry += rowH
         drawSwitchRow(hdc, ry, L("남은 한도로 표시", "Show remaining limits", "残り上限を表示"),
                       sub: nil, on: showsRemainingLimits, action: 58); ry += rowH
         let wslValue = WSLUsage.selectedDistribution ?? wslOptions[0]
@@ -1621,6 +1623,27 @@ enum WindowsTray {
         if let popupHwnd { InvalidateRect(popupHwnd, nil, true) }
     }
 
+    private static func adjustEvolutionSpeed(_ delta: Int) {
+        let current = EvolutionSpeedSettings.multiplier
+        let next = EvolutionSpeedSettings.normalizedMultiplier(current + delta)
+        guard next != current else { return }
+        EvolutionSpeedSettings.multiplier = next
+
+        // Lowering the threshold can make already-earned progress eligible immediately. Re-run the
+        // zero-delta evolution loop instead of waiting for another token event; token ledgers stay intact.
+        guard let companion else {
+            if let popupHwnd { InvalidateRect(popupHwnd, nil, true) }
+            return
+        }
+        Task {
+            await companion.applyUsage(0)
+            let disp = await companion.windowsDisplay
+            lock.withLock { currentDisplay = disp }
+            if let popupHwnd { InvalidateRect(popupHwnd, nil, true) }
+            scheduleRefresh()
+        }
+    }
+
     private static func toggleFloatingPet() {
         let d = UserDefaults.standard
         let on = d.object(forKey: "floatingPetEnabled") as? Bool ?? false
@@ -1803,6 +1826,8 @@ enum WindowsTray {
             case 67:
                 popupView = 3; dexMode = 0; dexFilter = 0; dexPage = 0; dexScroll = 0
                 if let popupHwnd { InvalidateRect(popupHwnd, nil, true) }
+            case 68: adjustEvolutionSpeed(-1)
+            case 69: adjustEvolutionSpeed(1)
             case 70...74: selectInterval(action - 70)   // interval preset
             case 80...199: selectWSL(action - 80)
             case 200...202: selectAnimationQuality(action - 200)

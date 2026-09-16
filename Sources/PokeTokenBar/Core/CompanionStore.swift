@@ -136,7 +136,7 @@ final class CompanionStore {
     }
     var threshold: Int {
         guard let a = state.active else { return 1 }
-        return PokemonBalance.phaseThreshold(rarity: a.rarity, totalForms: a.totalForms, stageIndex: a.stageIndex)
+        return EvolutionSpeedSettings.phaseThreshold(rarity: a.rarity, totalForms: a.totalForms, stageIndex: a.stageIndex)
     }
     var progress: Double {
         guard let a = state.active, threshold > 0 else { return 0 }
@@ -464,7 +464,7 @@ final class CompanionStore {
         // 위장 메타몽이 첫 진화 임계 도달 → 리빌(재시작 등 applyUsage 킥을 못 탄 경우 백업 트리거)
         if let a = state.active, a.dittoDisguise != nil, !a.dittoRevealed, currentLine != nil,
            !isHatching, !isRevealingDitto,
-           a.usedAtStage >= PokemonBalance.phaseThreshold(rarity: a.rarity, totalForms: a.totalForms, stageIndex: 0) {
+           a.usedAtStage >= EvolutionSpeedSettings.phaseThreshold(rarity: a.rarity, totalForms: a.totalForms, stageIndex: 0) {
             Task { await revealDitto() }
         }
         displayState = computeState(burnTier: burnTier, limitWarning: limitWarning,
@@ -483,7 +483,7 @@ final class CompanionStore {
         while state.active != nil, guardCount < 50 {
             guardCount += 1
             let a = state.active!
-            let thr = PokemonBalance.phaseThreshold(rarity: a.rarity, totalForms: a.totalForms, stageIndex: a.stageIndex)
+            let thr = EvolutionSpeedSettings.phaseThreshold(rarity: a.rarity, totalForms: a.totalForms, stageIndex: a.stageIndex)
             guard a.usedAtStage >= thr else { break }
             guard let node = line.tree.node(withID: a.currentID) else { break }
             // 위장체는 부화 때는 다형태지만, 에셋 정규화/마이그레이션 뒤 leaf가 될 수 있다.
@@ -1022,7 +1022,7 @@ final class CompanionStore {
     private func revealDitto() async {
         guard let a = state.active, a.dittoDisguise != nil, !a.dittoRevealed, !isRevealingDitto else { return }
         let generation = activeGeneration
-        let firstEvoThr = PokemonBalance.phaseThreshold(rarity: a.rarity, totalForms: a.totalForms, stageIndex: 0)
+        let firstEvoThr = EvolutionSpeedSettings.phaseThreshold(rarity: a.rarity, totalForms: a.totalForms, stageIndex: 0)
         guard a.usedAtStage >= firstEvoThr else { return }   // 임계 미달 방어
         isRevealingDitto = true
         defer { isRevealingDitto = false }
@@ -1031,7 +1031,7 @@ final class CompanionStore {
         }
         guard activeGeneration == generation,
               var m = state.active, m.dittoDisguise != nil, !m.dittoRevealed else { return }
-        let latestFirstEvoThr = PokemonBalance.phaseThreshold(rarity: m.rarity, totalForms: m.totalForms, stageIndex: 0)
+        let latestFirstEvoThr = EvolutionSpeedSettings.phaseThreshold(rarity: m.rarity, totalForms: m.totalForms, stageIndex: 0)
         guard m.usedAtStage >= latestFirstEvoThr else { return }
         let disguiseName = currentLine?.localizedName(m.baseID, state.language) ?? "#\(m.baseID)"
         let carryOver = max(0, m.usedAtStage - latestFirstEvoThr)   // 위장체 첫 진화 초과분 → 메타몽 성장 이월
