@@ -1,0 +1,38 @@
+name: Fix WindowsCore evolution speed
+
+on:
+  push:
+    branches: [feat/windows-evolution-speed]
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: feat/windows-evolution-speed
+          fetch-depth: 0
+
+      - name: Patch WindowsCore compatibility snapshot
+        run: python3 scripts/fix-windows-evolution-speed-core.py
+
+      - name: Verify Windows-specific wiring
+        run: |
+          test "$(grep -c 'EvolutionSpeedSettings.phaseThreshold' Sources/PokeTokenBar/WindowsCore/CompanionStore.swift)" -eq 4
+          test -f Sources/PokeTokenBar/WindowsCore/EvolutionSpeedSettings.swift
+          test -f Tests/PokeTokenBarWindowsTests/EvolutionSpeedSettingsTests.swift
+
+      - name: Commit fix and remove one-shot tooling
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/fix-windows-evolution-speed-core.yml scripts/fix-windows-evolution-speed-core.py
+          git add Sources/PokeTokenBar/WindowsCore/CompanionStore.swift \
+                  Sources/PokeTokenBar/WindowsCore/EvolutionSpeedSettings.swift \
+                  Tests/PokeTokenBarWindowsTests/EvolutionSpeedSettingsTests.swift
+          git commit -m 'fix(windows): wire evolution speed into WindowsCore'
+          git push origin HEAD:feat/windows-evolution-speed
