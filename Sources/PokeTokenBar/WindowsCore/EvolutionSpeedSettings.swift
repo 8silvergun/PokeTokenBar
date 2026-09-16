@@ -1,7 +1,8 @@
 import Foundation
 
 /// Windows companion growth-speed preference. Core/ is excluded from the Windows SwiftPM target,
-/// so the compatibility snapshot owns the same implementation independently.
+/// so the compatibility snapshot owns the same implementation independently. Keep the persistence
+/// key, supported range, and threshold math aligned with Core/EvolutionSpeedSettings.swift.
 enum EvolutionSpeedSettings {
     static let key = "companionEvolutionSpeedMultiplier"
     static let allowedMultipliers = Array(1...20)
