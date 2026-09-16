@@ -1,0 +1,152 @@
+from pathlib import Path
+
+
+# Route every active-Pokémon evolution threshold through the configurable wrapper.
+store_path = Path("Sources/PokeTokenBar/Core/CompanionStore.swift")
+store = store_path.read_text()
+old_call = "PokemonBalance.phaseThreshold("
+count = store.count(old_call)
+if count != 3:
+    raise SystemExit(f"expected 3 CompanionStore phaseThreshold calls, found {count}")
+store_path.write_text(store.replace(old_call, "EvolutionSpeedSettings.phaseThreshold("))
+
+
+# Add the persisted setting state and the General-settings row.
+settings_path = Path("Sources/PokeTokenBar/UI/SettingsView.swift")
+settings = settings_path.read_text()
+state_needle = '    @State private var selectedScanProviderID = "claude_code"\n'
+if settings.count(state_needle) != 1:
+    raise SystemExit("SettingsView state insertion point changed")
+settings = settings.replace(
+    state_needle,
+    '    @State private var evolutionSpeedMultiplier = EvolutionSpeedSettings.multiplier\n' + state_needle,
+    1,
+)
+
+row_needle = '''            Divider()
+            groupRow {
+                // 메뉴바 스프라이트와 플로팅 펫 **둘 다**에 적용되므로 펫 섹션이 아니라 일반 섹션에 둔다.
+'''
+if settings.count(row_needle) != 1:
+    raise SystemExit("SettingsView General-row insertion point changed")
+evolution_row = '''            Divider()
+            groupRow {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(l.evolutionSpeedLabel)
+                    Text(l.evolutionSpeedHint).font(.caption2).foregroundStyle(.tertiary)
+                }
+                Spacer()
+                Picker("", selection: $evolutionSpeedMultiplier) {
+                    ForEach(EvolutionSpeedSettings.allowedMultipliers, id: \.self) { multiplier in
+                        Text(l.evolutionSpeedMultiplier(multiplier)).tag(multiplier)
+                    }
+                }
+                .labelsHidden().pickerStyle(.menu).fixedSize()
+                .onChange(of: evolutionSpeedMultiplier) { _, newValue in
+                    EvolutionSpeedSettings.multiplier = newValue
+                    // 기존 진행도가 새 임계치를 이미 넘었다면 다음 사용량 갱신을 기다리지 않고 즉시 재평가.
+                    companion.applyUsage(0)
+                }
+            }
+            Divider()
+            groupRow {
+                // 메뉴바 스프라이트와 플로팅 펫 **둘 다**에 적용되므로 펫 섹션이 아니라 일반 섹션에 둔다.
+'''
+settings_path.write_text(settings.replace(row_needle, evolution_row, 1))
+
+
+Path("Sources/PokeTokenBar/Core/EvolutionSpeedSettings.swift").write_text('''import Foundation
+
+/// 포켓몬 성장 속도 설정. 세이브 게임이 아니라 앱 환경 설정으로 보관해
+/// 도감/인벤토리/토큰 원장과 독립적으로 바꿀 수 있게 한다.
+enum EvolutionSpeedSettings {
+    static let key = "companionEvolutionSpeedMultiplier"
+    static let allowedMultipliers = Array(1...20)
+
+    static func normalizedMultiplier(_ value: Int) -> Int {
+        min(allowedMultipliers.last ?? 20, max(allowedMultipliers.first ?? 1, value))
+    }
+
+    static var multiplier: Int {
+        get {
+            let stored = UserDefaults.standard.integer(forKey: key)
+            return normalizedMultiplier(stored == 0 ? 1 : stored)
+        }
+        set {
+            UserDefaults.standard.set(normalizedMultiplier(newValue), forKey: key)
+        }
+    }
+
+    /// n배 성장 = 동일한 실제 토큰 사용량으로 임계치의 1/n만 채우면 다음 단계에 도달.
+    /// 올림 나눗셈으로 1토큰 미만 임계치가 생기지 않게 하고, 토큰 통계/상점 재화는 건드리지 않는다.
+    static func adjustedThreshold(_ base: Int, multiplier: Int) -> Int {
+        let safeMultiplier = normalizedMultiplier(multiplier)
+        return max(1, (max(1, base) + safeMultiplier - 1) / safeMultiplier)
+    }
+
+    static func phaseThreshold(rarity: Rarity, totalForms: Int, stageIndex: Int) -> Int {
+        adjustedThreshold(
+            PokemonBalance.phaseThreshold(rarity: rarity, totalForms: totalForms, stageIndex: stageIndex),
+            multiplier: multiplier
+        )
+    }
+}
+''')
+
+
+Path("Sources/PokeTokenBar/Core/GrowthSpeedLocalization.swift").write_text('''extension L {
+    var evolutionSpeedLabel: String {
+        switch lang {
+        case .ko: return "진화 속도"
+        case .en: return "Evolution speed"
+        case .ja: return "進化速度"
+        case .es: return "Velocidad de evolución"
+        case .fr: return "Vitesse d’évolution"
+        case .pt: return "Velocidade de evolução"
+        case .de: return "Entwicklungsgeschwindigkeit"
+        }
+    }
+
+    var evolutionSpeedHint: String {
+        switch lang {
+        case .ko: return "포켓몬 성장 임계치만 낮춥니다. 알 부화 속도와 토큰 통계는 그대로입니다."
+        case .en: return "Lowers Pokémon growth thresholds only. Egg hatching and token stats stay unchanged."
+        case .ja: return "ポケモンの成長しきい値だけを下げます。タマゴの孵化速度とトークン統計は変わりません。"
+        case .es: return "Solo reduce los umbrales de crecimiento. La eclosión y las estadísticas de tokens no cambian."
+        case .fr: return "Réduit seulement les seuils de croissance. L’éclosion et les statistiques de jetons ne changent pas."
+        case .pt: return "Reduz apenas os limites de crescimento. A eclosão e as estatísticas de tokens não mudam."
+        case .de: return "Senkt nur die Wachstumsschwellen. Schlüpfen und Token-Statistiken bleiben unverändert."
+        }
+    }
+
+    func evolutionSpeedMultiplier(_ value: Int) -> String { "\\(value)×" }
+}
+''')
+
+
+Path("Tests/PokeTokenBarTests/EvolutionSpeedSettingsTests.swift").write_text('''import XCTest
+@testable import PokeTokenBar
+
+final class EvolutionSpeedSettingsTests: XCTestCase {
+    func testMultiplierNormalizationClampsToSupportedRange() {
+        XCTAssertEqual(EvolutionSpeedSettings.normalizedMultiplier(-10), 1)
+        XCTAssertEqual(EvolutionSpeedSettings.normalizedMultiplier(1), 1)
+        XCTAssertEqual(EvolutionSpeedSettings.normalizedMultiplier(7), 7)
+        XCTAssertEqual(EvolutionSpeedSettings.normalizedMultiplier(20), 20)
+        XCTAssertEqual(EvolutionSpeedSettings.normalizedMultiplier(99), 20)
+    }
+
+    func testAdjustedThresholdPreservesOneX() {
+        XCTAssertEqual(EvolutionSpeedSettings.adjustedThreshold(125_000_000, multiplier: 1), 125_000_000)
+    }
+
+    func testAdjustedThresholdUsesCeilingDivision() {
+        XCTAssertEqual(EvolutionSpeedSettings.adjustedThreshold(125_000_001, multiplier: 2), 62_500_001)
+        XCTAssertEqual(EvolutionSpeedSettings.adjustedThreshold(125_000_000, multiplier: 5), 25_000_000)
+    }
+
+    func testAdjustedThresholdNeverFallsBelowOneToken() {
+        XCTAssertEqual(EvolutionSpeedSettings.adjustedThreshold(1, multiplier: 20), 1)
+    }
+}
+''')
