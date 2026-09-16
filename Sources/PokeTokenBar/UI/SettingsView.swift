@@ -23,6 +23,7 @@ struct SettingsView: View {
     @State private var sessionKeyInput = ""
     @State private var isCheckingUpdate = false
     @State private var didCheckUpdate = false
+    @State private var evolutionSpeedMultiplier = EvolutionSpeedSettings.multiplier
     @State private var selectedScanProviderID = "claude_code"
     /// Provider the draft currently describes. Picker change updates `selectedScanProviderID`
     /// before the TextField blurs; committing against the selection would write Claude paths
@@ -173,6 +174,25 @@ struct SettingsView: View {
                     ForEach(UsageStore.intervalPresets, id: \.value) { Text(l.intervalLabel($0.value)).tag($0.value) }
                 }
                 .labelsHidden().pickerStyle(.menu).fixedSize()
+            }
+            Divider()
+            groupRow {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(l.evolutionSpeedLabel)
+                    Text(l.evolutionSpeedHint).font(.caption2).foregroundStyle(.tertiary)
+                }
+                Spacer()
+                Picker("", selection: $evolutionSpeedMultiplier) {
+                    ForEach(EvolutionSpeedSettings.allowedMultipliers, id: \.self) { multiplier in
+                        Text(l.evolutionSpeedMultiplier(multiplier)).tag(multiplier)
+                    }
+                }
+                .labelsHidden().pickerStyle(.menu).fixedSize()
+                .onChange(of: evolutionSpeedMultiplier) { _, newValue in
+                    EvolutionSpeedSettings.multiplier = newValue
+                    // 기존 진행도가 새 임계치를 이미 넘었다면 다음 사용량 갱신을 기다리지 않고 즉시 재평가.
+                    companion.applyUsage(0)
+                }
             }
             Divider()
             groupRow {
