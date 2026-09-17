@@ -600,3 +600,10 @@ read_when:
   자동 업데이트 시 앱 종료를 기다릴 때 `pgrep -x PokeTokenBar`를 쓰면, 중복 인스턴스가 살아있는 동안 루프를
   결코 빠져나오지 못하고 20초 타임아웃을 온전히 소모한다(#175). `ProcessInfo.processInfo.processIdentifier`로
   종료 대상 프로세스 PID를 전달하고 `kill -0 "$3"`로 특정 프로세스의 종료를 대기한다.
+
+## 2026-09-17 — High evolution speed could skip the evolved form on Windows
+
+- **Symptom:** after an evolution toast (for example Paras → Parasect), the Windows UI could appear stuck and then show an egg; selecting the evolved species in the Pokédex made that species visible again.
+- **Root cause:** `applyUsage` consumed an entire batched usage delta in a loop. At a high evolution-speed multiplier, one refresh could cross both the evolution threshold and the final-form graduation threshold, so the app evolved and immediately set `active = nil` in `graduate()`. Separately, Windows did not publish the new `CompanionDisplay` until after sprite/network prefetching, so the notification could arrive while the popup still rendered the previous snapshot.
+- **Class sweep:** the one-transition rule is applied to both `Core/CompanionStore.swift` and the Windows compatibility snapshot. Windows now publishes the state snapshot before sprite I/O. Egg hatching, token accounting, shop currency, and overflow carry-forward are unchanged.
+- **Regression:** platform tests inject a two-stage Paras/Parasect line at 20× speed and a delta large enough to exceed both thresholds. They require the first application to stop on Parasect with overflow preserved, and a later application to graduate normally.

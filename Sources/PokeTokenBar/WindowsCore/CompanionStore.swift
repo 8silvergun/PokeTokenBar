@@ -356,6 +356,10 @@ final class CompanionStore {
                 fireCelebration(.evolve)
                 eventUntil = clock().addingTimeInterval(4)
                 notifyCompanionEvent(l.notifEvolveTitle, l.notifEvolveBody(newName))
+                // Keep one lifecycle transition visible per usage application. A large batched delta
+                // (especially at high evolution-speed multipliers) may already exceed the next stage,
+                // but its overflow stays in usedAtStage and is evaluated on the next usage application.
+                break
             }
         }
         save()
