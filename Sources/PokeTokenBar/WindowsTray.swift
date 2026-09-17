@@ -189,6 +189,12 @@ enum WindowsTray {
                                hasUsageData: !all.isEmpty)
         var disp = await companion.windowsDisplay   // refreshed again after limit rewards below
 
+        // Publish the state transition before sprite/network prefetching. Evolution notifications can
+        // reach the Win32 loop immediately, while a newly selected sprite may still need remote I/O;
+        // without this repaint the popup can look frozen on the previous egg/form until refresh ends.
+        lock.withLock { currentDisplay = disp }
+        if let sinkHwnd { _ = PostMessageW(sinkHwnd, updateMessage, 0, 0) }
+
         var claude5h: Int?, claude7d: Int?
         let codexPct: Int? = nil
         // Throttle the oauth/usage fetch to ≥25s apart. Every user action (buy/use/language change)

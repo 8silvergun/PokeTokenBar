@@ -519,6 +519,10 @@ final class CompanionStore {
                 // 이게 없으면 computeState 가 .levelUp 을 안 내 statusEvolved 가 도달 불가(dead code)였다.
                 eventUntil = clock().addingTimeInterval(4)
                 notifyCompanionEvent(l.notifEvolveTitle, l.notifEvolveBody(newName))
+                // Keep one lifecycle transition visible per usage application. A large batched delta
+                // (especially at high evolution-speed multipliers) may already exceed the next stage,
+                // but its overflow stays in usedAtStage and is evaluated on the next usage application.
+                break
             }
         }
         save()
