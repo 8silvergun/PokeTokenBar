@@ -57,6 +57,25 @@ final class ShopTests: XCTestCase {
         XCTAssertEqual(round.spentTokens, 400)
     }
 
+    func testPriceRatioAppliesToItemsAndEggsAndChargesEffectivePrice() {
+        let previous = ShopPriceSettings.percent
+        defer { ShopPriceSettings.percent = previous }
+        ShopPriceSettings.percent = 50
+
+        XCTAssertEqual(ShopEntry.item(.rareCandy).price, RareCandy.price / 2)
+        XCTAssertEqual(ShopEntry.egg(nil).price, FreshEgg.price / 2)
+        XCTAssertEqual(ShopEntry.egg(.rare).price, FreshEgg.price(guaranteeing: .rare) / 2)
+
+        let s = store(used: RareCandy.price / 2)
+        XCTAssertTrue(s.buyRareCandy())
+        XCTAssertEqual(s.state.spentTokens, RareCandy.price / 2)
+        XCTAssertEqual(s.availableTokens, 0)
+
+        // Changing the preference changes future prices only; historical spend remains exact.
+        ShopPriceSettings.percent = 200
+        XCTAssertEqual(s.state.spentTokens, RareCandy.price / 2)
+    }
+
     // MARK: 구매 가능 판정 (경계)
 
     func testCanBuyAtExactPrice() {
