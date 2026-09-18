@@ -35,7 +35,9 @@ enum WindowsTray {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var pendingTip = "PokeTokenBar — loading…"
     nonisolated(unsafe) private static var pendingIcon: HICON?
+    nonisolated(unsafe) private static var pendingIconKey: String?
     nonisolated(unsafe) private static var currentIcon: HICON?          // tray/floating static sprite (representative/current)
+    nonisolated(unsafe) private static var currentIconKey: String?
     // Home must render the *current companion* subject, not the representative subject used by
     // tray/floating pet. Keep a separate static icon + subject key so an egg transition cannot
     // retain the previous Pokémon while the egg sprite is still loading.
@@ -367,7 +369,11 @@ enum WindowsTray {
 
         lock.withLock {
             pendingTip = tip; reportLines = report; currentDisplay = disp; currentUsage = us
-            if icon != nil { pendingIcon = icon }
+            // Like Home, tray/floating must invalidate a previous subject if the replacement image
+            // cannot be loaded. This is a no-op for a pinned representative because trayVisualKey
+            // stays on that representative across lifecycle transitions.
+            pendingIcon = icon
+            pendingIconKey = disp.trayVisualKey
             // Publish the Home subject even when its image load failed. The key lets applySnapshot
             // invalidate a stale image from the previous subject without throwing away a same-subject
             // cached icon on a transient network failure.
@@ -571,10 +577,25 @@ enum WindowsTray {
 
     private static func applySnapshot() {
         writeWide(&nid.szTip, lock.withLock { pendingTip }, capacity: 128)
-        let newIcon: HICON? = lock.withLock { let i = pendingIcon; pendingIcon = nil; return i }
-        if let newIcon {
-            if let old = currentIcon { DestroyIcon(old) }
-            currentIcon = newIcon
+        let iconUpdate: (HICON?, String?) = lock.withLock {
+            let i = pendingIcon
+            let key = pendingIconKey
+            pendingIcon = nil
+            pendingIconKey = nil
+            return (i, key)
+        }
+        if let key = iconUpdate.1 {
+            if let newIcon = iconUpdate.0 {
+                if let old = currentIcon { DestroyIcon(old) }
+                currentIcon = newIcon
+                currentIconKey = key
+            } else if currentIconKey != key {
+                // Do not keep a stale Pokémon when the lifecycle subject changed to an egg and
+                // the egg fetch failed. A same-subject transient failure keeps the last-good icon.
+                if let old = currentIcon { DestroyIcon(old) }
+                currentIcon = nil
+                currentIconKey = key
+            }
         }
         let homeUpdate: (HICON?, String?) = lock.withLock {
             let i = pendingHomeIcon
