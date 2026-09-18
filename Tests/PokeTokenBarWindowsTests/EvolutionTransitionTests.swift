@@ -56,6 +56,20 @@ final class EvolutionTransitionTests: XCTestCase {
         snapshot = await store.state
         XCTAssertNil(snapshot.active)
         XCTAssertEqual(snapshot.dex.last?.finalID, 47)
+        XCTAssertEqual(snapshot.eggUsage, 0, "graduation starts the next egg from zero")
+
+        // Today's already-consumed tokens are not retroactively copied into the new egg. Once the
+        // daily ledger has a baseline, only *new* usage after graduation advances incubation.
+        await store.update(todayTokens: 10_000_000, todayDate: "d1", monthTotal: 10_000_000,
+                           burnTier: .normal, limitWarning: false, hasUsageData: true)
+        await store.update(todayTokens: 12_000_000, todayDate: "d1", monthTotal: 12_000_000,
+                           burnTier: .normal, limitWarning: false, hasUsageData: true)
+
+        snapshot = await store.state
+        XCTAssertNil(snapshot.active)
+        XCTAssertEqual(snapshot.eggUsage, 2_000_000)
+        let display = await store.windowsDisplay
+        XCTAssertEqual(display.eggProgress, 0.4, accuracy: 0.001)
     }
 }
 #endif
