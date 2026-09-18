@@ -105,11 +105,11 @@ final class StoreTerminationTests: XCTestCase {
 
         s.applyUsage(Int(PokemonBalance.graduationTotal(.common)) * 10)
         XCTAssertEqual(s.state.active?.currentID, 2)
-        XCTAssertTrue(s.dexEntries.isEmpty)
+        XCTAssertTrue(s.state.dex.isEmpty, "active companion view must not be mistaken for a graduated dex record")
 
         s.applyUsage(0)
         XCTAssertEqual(s.state.active?.currentID, 3)
-        XCTAssertTrue(s.dexEntries.isEmpty)
+        XCTAssertTrue(s.state.dex.isEmpty, "final active form is still not graduated")
 
         s.applyUsage(0)
         XCTAssertNil(s.state.active)
