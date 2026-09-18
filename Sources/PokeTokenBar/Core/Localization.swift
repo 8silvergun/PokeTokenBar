@@ -135,6 +135,13 @@ struct L {
     var animationPowerSaver: String { t("배터리 절약", "Power saver", "バッテリー優先", "Ahorro de batería", "Économie d'énergie", "Economia de bateria", "Energiesparmodus") }
     var animationBalanced: String { t("기본", "Balanced", "標準", "Equilibrado", "Équilibré", "Equilibrado", "Ausgewogen") }
     var animationSmooth: String { t("부드럽게", "Smooth", "滑らか", "Fluido", "Fluide", "Fluido", "Flüssig") }
+    var shopPriceRatioLabel: String { t("상점 가격", "Shop prices", "ショップ価格", "Precios de la tienda", "Prix de la boutique", "Preços da loja", "Shop-Preise") }
+    var shopPriceRatioHint: String {
+        t("기본 가격 대비 비율 · 앞으로의 구매에만 적용", "Relative to base prices · applies to future purchases only",
+          "基本価格に対する割合・今後の購入にのみ適用", "Porcentaje del precio base · solo para compras futuras",
+          "Pourcentage du prix de base · achats futurs uniquement", "Percentual do preço base · só para compras futuras",
+          "Anteil am Basispreis · gilt nur für künftige Käufe")
+    }
     var limitDisplayModeLabel: String { t("한도 표시 방식", "Limit display", "上限の表示", "Visualización del límite", "Affichage de la limite", "Exibição do limite", "Limit-Anzeige") }
     var limitDisplayUsed: String { t("사용량", "Used", "使用量", "Usado", "Utilisé", "Usado", "Verbraucht") }
     var limitDisplayRemaining: String { t("남은 양", "Remaining", "残量", "Restante", "Restant", "Restante", "Verbleibend") }
