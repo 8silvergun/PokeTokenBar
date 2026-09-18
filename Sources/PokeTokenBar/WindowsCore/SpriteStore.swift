@@ -14,6 +14,11 @@ actor SpriteStore {
     private var mem: [String: Data] = [:]
     private var memOrder: [String] = []   // LRU 순서(최근 접근이 뒤). 상한 초과 시 앞(오래된 것)부터 evict
     private let memLimit = 24              // in-memory 스프라이트 캐시 상한 — 세션 중 종 변경 누적 무한증가 방지(#H1)
+    // A failed remote sprite should not be retried several times in the same refresh (static/Home/GIF)
+    // or on every polling tick. This is especially important on Windows, where a TLS failure used to
+    // keep the serialized refresh occupied after every evolution cache miss.
+    private var retryAfter: [String: Date] = [:]
+    private let retryBackoff: TimeInterval = 30
     /// Remote sprites are tiny in normal operation. Reject unexpectedly large payloads before they
     /// reach WIC or the cache, limiting memory/disk amplification from compromised remote content.
     static let maxPayloadBytes = 8 * 1024 * 1024
@@ -43,8 +48,7 @@ actor SpriteStore {
         case (false, true):  urlStr = "\(base)/shiny/\(speciesID).png"
         }
         guard let url = URL(string: urlStr),
-              let (d, resp) = try? await URLSession.shared.data(from: url),
-              accepted(d, response: resp) else { return nil }
+              let d = await remoteData(url, cacheKey: key) else { return nil }
         try? d.write(to: file, options: .atomic)   // torn write 방지 — 크래시/강제종료 시 손상 캐시가 남지 않게
         remember(key, d)
         return d
@@ -58,8 +62,7 @@ actor SpriteStore {
         let file = dir.appendingPathComponent("\(key).png")
         if let d = cachedData(at: file) { remember(key, d); return d }
         guard let url = URL(string: "\(itemBase)/\(itemName).png"),
-              let (d, resp) = try? await URLSession.shared.data(from: url),
-              accepted(d, response: resp) else { return nil }
+              let d = await remoteData(url, cacheKey: key) else { return nil }
         try? d.write(to: file, options: .atomic)
         remember(key, d)
         return d
@@ -72,8 +75,7 @@ actor SpriteStore {
         let file = dir.appendingPathComponent("egg.png")
         if let d = cachedData(at: file) { remember(key, d); return d }
         guard let url = URL(string: "\(base)/egg.png"),
-              let (d, resp) = try? await URLSession.shared.data(from: url),
-              accepted(d, response: resp) else { return nil }
+              let d = await remoteData(url, cacheKey: key) else { return nil }
         try? d.write(to: file, options: .atomic)
         remember(key, d)
         return d
@@ -92,11 +94,71 @@ actor SpriteStore {
         let file = dir.appendingPathComponent("\(key).png")
         if let d = cachedData(at: file) { remember(key, d); return d }
         guard let url = URL(string: "https://raw.githubusercontent.com/googlefonts/noto-emoji/main/png/128/\(name).png"),
-              let (d, resp) = try? await URLSession.shared.data(from: url),
-              accepted(d, response: resp) else { return nil }
+              let d = await remoteData(url, cacheKey: key) else { return nil }
         try? d.write(to: file, options: .atomic)
         remember(key, d)
         return d
+    }
+
+    /// Remote image trust boundary. Item names/species IDs eventually become URL path components,
+    /// so keep the Windows curl fallback locked to the two repositories this store intentionally uses.
+    nonisolated static func isAllowedRemoteURL(_ url: URL) -> Bool {
+        guard url.scheme == "https",
+              url.host == "raw.githubusercontent.com",
+              url.port == nil || url.port == 443,
+              url.user == nil, url.password == nil else { return false }
+        return url.path.hasPrefix("/PokeAPI/sprites/master/sprites/")
+            || url.path.hasPrefix("/googlefonts/noto-emoji/main/png/128/")
+    }
+
+    private func remoteData(_ url: URL, cacheKey key: String) async -> Data? {
+        if let until = retryAfter[key], until > Date() { return nil }
+        guard Self.isAllowedRemoteURL(url) else {
+            retryAfter[key] = Date().addingTimeInterval(retryBackoff)
+            return nil
+        }
+
+        #if os(Windows)
+        // Windows FoundationNetworking uses libcurl+Schannel and has already shown the same
+        // CRYPT_E_NO_REVOCATION_CHECK / non-returning HTTPS behavior on PokéAPI. A species change is
+        // normally the first time a new sprite hits the network, so use the inbox curl.exe with the
+        // same best-effort revocation policy as WindowsCore/PokeAPIClient and hard deadlines.
+        guard let curl = WindowsProcess.systemExecutable("curl.exe") else {
+            retryAfter[key] = Date().addingTimeInterval(retryBackoff)
+            return nil
+        }
+        let tmp = dir.appendingPathComponent(".download-\(UUID().uuidString).tmp")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let result = WindowsProcess.capture(
+            executable: curl,
+            arguments: [
+                "--silent", "--show-error", "--fail", "--location",
+                "--proto", "=https", "--proto-redir", "=https",
+                "--connect-timeout", "3", "--max-time", "8",
+                "--ssl-revoke-best-effort",
+                "--max-filesize", String(Self.maxPayloadBytes),
+                "--output", tmp.path,
+                url.absoluteString
+            ],
+            timeout: 10,
+            maxOutputBytes: 64 * 1024)
+        guard result.failure == nil, result.exitCode == 0,
+              let data = cachedData(at: tmp) else {
+            retryAfter[key] = Date().addingTimeInterval(retryBackoff)
+            AppLog.write("sprite curl failed key=\(key) path=\(url.path) exit=\(result.exitCode.map(String.init) ?? "nil") failure=\(String(describing: result.failure))")
+            return nil
+        }
+        retryAfter.removeValue(forKey: key)
+        return data
+        #else
+        guard let (data, response) = try? await URLSession.shared.data(from: url),
+              accepted(data, response: response) else {
+            retryAfter[key] = Date().addingTimeInterval(retryBackoff)
+            return nil
+        }
+        retryAfter.removeValue(forKey: key)
+        return data
+        #endif
     }
 
     private func accepted(_ data: Data, response: URLResponse) -> Bool {
