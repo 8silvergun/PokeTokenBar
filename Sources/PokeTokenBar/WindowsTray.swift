@@ -453,9 +453,10 @@ enum WindowsTray {
 
         // Animated tray/floating sprite. A stale task may finish after another lifecycle transition;
         // only the visual key currently displayed is allowed to publish its HICON frames.
-        let needsAnimation = lock.withLock {
+        let needsAnimation = disp.visualSpeciesID != nil && lock.withLock {
             currentDisplay.trayVisualKey == trayKey &&
-            animSpeciesKey != trayKey && pendingAnimKey != trayKey
+            (animSpeciesKey != trayKey || animFrames.isEmpty) &&
+            pendingAnimKey != trayKey
         }
         if needsAnimation {
             var frames: [HICON] = []
