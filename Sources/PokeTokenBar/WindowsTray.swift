@@ -156,8 +156,8 @@ enum WindowsTray {
         }
         guard go else { return }   // keep refreshes serial (companion isn't reentrancy-safe)
         Task.detached {
+            defer { lock.withLock { refreshing = false } }
             await refresh()
-            lock.withLock { refreshing = false }
         }
     }
 
@@ -269,65 +269,6 @@ enum WindowsTray {
         // returns no data (verified directly), and each attempt otherwise hangs the refresh on a
         // 20s spawn timeout. Codex *usage* (tokens) is unaffected — it's parsed from log files.
 
-        let icon = await companionIcon(disp)
-        // The Home card has a different visual contract from tray/floating pet: it always shows the
-        // current companion (or the newly received egg), even when a representative is pinned.
-        let homeIcon = await homeCompanionIcon(disp)
-        let homeIconKey = disp.homeVisualKey
-        // Animated tray/floating sprite (Gen-V GIF → frame HICONs). Reload only when subject changes.
-        let animKey = disp.trayVisualKey
-        if lock.withLock({ animSpeciesKey != animKey && pendingAnimKey != animKey }) {
-            var frames: [HICON] = []
-            if let id = disp.visualSpeciesID,
-               let gif = await SpriteStore.shared.data(speciesID: id, animated: true, shiny: disp.visualIsShiny) {
-                frames = WindowsImaging.hiconsFromGIF(gif) ?? []
-            }
-            lock.withLock { pendingAnim = frames; pendingAnimKey = animKey }
-        }
-        // Pre-fetch dex sprites (once each) so the collection grid renders without flashes.
-        for item in disp.dex {
-            let have = lock.withLock { dexIcons[item.speciesID] != nil }
-            if !have,
-               let png = await SpriteStore.shared.data(speciesID: item.speciesID, animated: false, shiny: item.isShiny),
-               let ic = WindowsImaging.hicon(fromPNG: png) {
-                lock.withLock { dexIcons[item.speciesID] = ic }
-            }
-        }
-        // Pre-fetch evolution-line sprites (Home card thumbnails) — one per node species.
-        for node in disp.lineNodes {
-            let have = lock.withLock { evoIcons[node.id] != nil }
-            if !have,
-               let png = await SpriteStore.shared.data(speciesID: node.id, animated: false, shiny: disp.isShiny),
-               let ic = WindowsImaging.hicon(fromPNG: png) {
-                lock.withLock { evoIcons[node.id] = ic }
-            }
-        }
-        // Item sprites for Bag / Shop (rare-candy, shiny-charm; mint has no PokeAPI sprite).
-        for name in ["rare-candy", "shiny-charm"] {
-            if lock.withLock({ itemIcons[name] == nil }),
-               let png = await SpriteStore.shared.data(itemName: name),
-               let ic = WindowsImaging.hicon(fromPNG: png) {
-                lock.withLock { itemIcons[name] = ic }
-            }
-        }
-        // The Shop's fresh-egg card uses the pokemon/egg.png sprite (not an item sprite; there is no
-        // items/egg.png), cached under "egg" — the same source as the companion egg.
-        if lock.withLock({ itemIcons["egg"] == nil }),
-           let png = await SpriteStore.shared.eggData(),
-           let ic = WindowsImaging.hicon(fromPNG: png) {
-            lock.withLock { itemIcons["egg"] = ic }
-        }
-        // Color emoji images (Noto, runtime-fetched) for Shop/Bag cards with no PokeAPI sprite (e.g.
-        // mint 🌿). GDI draws color emoji as a flat monochrome glyph, so we render the fetched PNG
-        // instead — matching how macOS shows the Apple color-emoji glyph.
-        let fallbackEmojis = Set((disp.shopEntries + disp.bagEntries).filter { $0.icon == nil }.map(\.emoji))
-        for emoji in fallbackEmojis {
-            if lock.withLock({ emojiIcons[emoji] == nil }),
-               let png = await SpriteStore.shared.emojiData(emoji),
-               let ic = WindowsImaging.hicon(fromPNG: png) {
-                lock.withLock { emojiIcons[emoji] = ic }
-            }
-        }
         // Combined usage + Claude breakdown for the Home tab.
         func period(_ e: [LocalUsageReader.Entry], _ from: Date) -> PeriodUsage {
             LocalUsageReader.period(entries: e, periodKey: "p", fromDay: fmt.string(from: from), toDay: fmt.string(from: now))
@@ -367,21 +308,42 @@ enum WindowsTray {
                                  claude5h: claude5h, claude7d: claude7d, codexPct: codexPct)
         let alert = limitAlert(claude7d)
 
+        // Commit usage/lifecycle state before any remote sprite I/O. A newly evolved species is a
+        // cache miss by definition; if image networking stalls, token refresh and popup interaction
+        // must still keep working. Subject-key placeholders clear stale old sprites immediately.
+        var discardedPendingFrames: [HICON] = []
         lock.withLock {
             pendingTip = tip; reportLines = report; currentDisplay = disp; currentUsage = us
-            // Like Home, tray/floating must invalidate a previous subject if the replacement image
-            // cannot be loaded. This is a no-op for a pinned representative because trayVisualKey
-            // stays on that representative across lifecycle transitions.
-            pendingIcon = icon
-            pendingIconKey = disp.trayVisualKey
-            // Publish the Home subject even when its image load failed. The key lets applySnapshot
-            // invalidate a stale image from the previous subject without throwing away a same-subject
-            // cached icon on a transient network failure.
-            pendingHomeIcon = homeIcon
-            pendingHomeIconKey = homeIconKey
+
+            if pendingIconKey != disp.trayVisualKey {
+                if let old = pendingIcon { DestroyIcon(old) }
+                pendingIcon = nil
+                pendingIconKey = disp.trayVisualKey
+            } else if pendingIconKey == nil {
+                pendingIconKey = disp.trayVisualKey
+            }
+
+            if pendingHomeIconKey != disp.homeVisualKey {
+                if let old = pendingHomeIcon { DestroyIcon(old) }
+                pendingHomeIcon = nil
+                pendingHomeIconKey = disp.homeVisualKey
+            } else if pendingHomeIconKey == nil {
+                pendingHomeIconKey = disp.homeVisualKey
+            }
+
+            if animSpeciesKey != disp.trayVisualKey && pendingAnimKey != disp.trayVisualKey {
+                discardedPendingFrames = pendingAnim ?? []
+                pendingAnim = []
+                pendingAnimKey = disp.trayVisualKey
+            }
             if let alert { pendingAlert = alert }
         }
+        for frame in discardedPendingFrames { DestroyIcon(frame) }
         if let sinkHwnd { _ = PostMessageW(sinkHwnd, updateMessage, 0, 0) }
+
+        // Sprites are best-effort decoration. Run them outside the serialized usage refresh so a
+        // cache miss/TLS problem after evolution cannot leave `refreshing == true` indefinitely.
+        scheduleVisualRefresh(disp)
 
         // Background release check — long throttle (the timer path), with a Windows toast on detection.
         // Opening the popover checks with no throttle but WITHOUT a toast (see togglePopup) — the banner
@@ -449,6 +411,126 @@ enum WindowsTray {
         }
         guard let png else { return nil }
         return WindowsImaging.hicon(fromPNG: png)
+    }
+
+    /// Remote/cached visuals are deliberately detached from the usage refresh. Evolution changes the
+    /// species key, which is exactly when a cache miss is most likely; visual I/O must never own the
+    /// `refreshing` gate used by token/state updates.
+    private static func scheduleVisualRefresh(_ disp: CompanionDisplay) {
+        Task.detached(priority: .utility) {
+            await refreshVisuals(disp)
+        }
+    }
+
+    private static func refreshVisuals(_ disp: CompanionDisplay) async {
+        let trayKey = disp.trayVisualKey
+        let homeKey = disp.homeVisualKey
+
+        // Static subjects first so the Home/tray replacement appears as soon as possible.
+        let icon = await companionIcon(disp)
+        let homeIcon = await homeCompanionIcon(disp)
+
+        var staleIcons: [HICON] = []
+        lock.withLock {
+            if currentDisplay.trayVisualKey == trayKey {
+                if let old = pendingIcon { staleIcons.append(old) }
+                pendingIcon = icon
+                pendingIconKey = trayKey
+            } else if let icon {
+                staleIcons.append(icon)
+            }
+
+            if currentDisplay.homeVisualKey == homeKey {
+                if let old = pendingHomeIcon { staleIcons.append(old) }
+                pendingHomeIcon = homeIcon
+                pendingHomeIconKey = homeKey
+            } else if let homeIcon {
+                staleIcons.append(homeIcon)
+            }
+        }
+        for icon in staleIcons { DestroyIcon(icon) }
+        if let sinkHwnd { _ = PostMessageW(sinkHwnd, updateMessage, 0, 0) }
+
+        // Animated tray/floating sprite. A stale task may finish after another lifecycle transition;
+        // only the visual key currently displayed is allowed to publish its HICON frames.
+        let needsAnimation = lock.withLock {
+            currentDisplay.trayVisualKey == trayKey &&
+            animSpeciesKey != trayKey && pendingAnimKey != trayKey
+        }
+        if needsAnimation {
+            var frames: [HICON] = []
+            if let id = disp.visualSpeciesID,
+               let gif = await SpriteStore.shared.data(speciesID: id, animated: true, shiny: disp.visualIsShiny) {
+                frames = WindowsImaging.hiconsFromGIF(gif) ?? []
+            }
+
+            var discard: [HICON] = []
+            lock.withLock {
+                if currentDisplay.trayVisualKey == trayKey {
+                    discard = pendingAnim ?? []
+                    pendingAnim = frames
+                    pendingAnimKey = trayKey
+                } else {
+                    discard = frames
+                }
+            }
+            for frame in discard { DestroyIcon(frame) }
+            if let sinkHwnd { _ = PostMessageW(sinkHwnd, updateMessage, 0, 0) }
+        }
+
+        // Remaining thumbnails/items are opportunistic cache warming only.
+        for item in disp.dex {
+            let have = lock.withLock { dexIcons[item.speciesID] != nil }
+            if !have,
+               let png = await SpriteStore.shared.data(speciesID: item.speciesID, animated: false, shiny: item.isShiny),
+               let ic = WindowsImaging.hicon(fromPNG: png) {
+                lock.withLock {
+                    if dexIcons[item.speciesID] == nil { dexIcons[item.speciesID] = ic }
+                    else { DestroyIcon(ic) }
+                }
+            }
+        }
+        for node in disp.lineNodes {
+            let have = lock.withLock { evoIcons[node.id] != nil }
+            if !have,
+               let png = await SpriteStore.shared.data(speciesID: node.id, animated: false, shiny: disp.isShiny),
+               let ic = WindowsImaging.hicon(fromPNG: png) {
+                lock.withLock {
+                    if evoIcons[node.id] == nil { evoIcons[node.id] = ic }
+                    else { DestroyIcon(ic) }
+                }
+            }
+        }
+        for name in ["rare-candy", "shiny-charm"] {
+            if lock.withLock({ itemIcons[name] == nil }),
+               let png = await SpriteStore.shared.data(itemName: name),
+               let ic = WindowsImaging.hicon(fromPNG: png) {
+                lock.withLock {
+                    if itemIcons[name] == nil { itemIcons[name] = ic }
+                    else { DestroyIcon(ic) }
+                }
+            }
+        }
+        if lock.withLock({ itemIcons["egg"] == nil }),
+           let png = await SpriteStore.shared.eggData(),
+           let ic = WindowsImaging.hicon(fromPNG: png) {
+            lock.withLock {
+                if itemIcons["egg"] == nil { itemIcons["egg"] = ic }
+                else { DestroyIcon(ic) }
+            }
+        }
+        let fallbackEmojis = Set((disp.shopEntries + disp.bagEntries).filter { $0.icon == nil }.map(\.emoji))
+        for emoji in fallbackEmojis {
+            if lock.withLock({ emojiIcons[emoji] == nil }),
+               let png = await SpriteStore.shared.emojiData(emoji),
+               let ic = WindowsImaging.hicon(fromPNG: png) {
+                lock.withLock {
+                    if emojiIcons[emoji] == nil { emojiIcons[emoji] = ic }
+                    else { DestroyIcon(ic) }
+                }
+            }
+        }
+        if let popupHwnd, IsWindowVisible(popupHwnd) { InvalidateRect(popupHwnd, nil, true) }
     }
 
     /// Never return an icon belonging to a previous Home subject. This matters during the early
@@ -622,7 +704,8 @@ enum WindowsTray {
             for old in animFrames { DestroyIcon(old) }
             animFrames = newAnim
             animIndex = 0
-            animSpeciesKey = lock.withLock { pendingAnimKey }
+            let appliedKey = lock.withLock { pendingAnimKey }
+            lock.withLock { animSpeciesKey = appliedKey }
         }
         nid.hIcon = displayedIcon()
         _ = Shell_NotifyIconW(DWORD(NIM_MODIFY), &nid)
