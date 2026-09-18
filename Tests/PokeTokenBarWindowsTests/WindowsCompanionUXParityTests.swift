@@ -73,6 +73,25 @@ final class WindowsCompanionUXParityTests: XCTestCase {
         XCTAssertNil(resetID)
     }
 
+    func testHomeVisualSubjectStaysEggWhenRepresentativeIsPinned() {
+        var display = CompanionDisplay()
+        display.isEgg = true
+        display.speciesID = nil
+        display.isShiny = false
+        display.visualSpeciesID = 47      // e.g. pinned Parasect
+        display.visualIsShiny = false
+
+        XCTAssertEqual(display.homeVisualKey, "egg")
+        XCTAssertEqual(display.trayVisualKey, "47-false")
+        XCTAssertFalse(display.canReuseTrayAnimationForHome,
+                       "representative animation must not paint over the Home egg")
+
+        display.isEgg = false
+        display.speciesID = 47
+        XCTAssertEqual(display.homeVisualKey, display.trayVisualKey)
+        XCTAssertTrue(display.canReuseTrayAnimationForHome)
+    }
+
     func testFloatingPetSizeIsBounded() {
         XCTAssertEqual(WindowsFloatingPet.clampedSize(1), WindowsFloatingPet.minSize)
         XCTAssertEqual(WindowsFloatingPet.clampedSize(96), 96)

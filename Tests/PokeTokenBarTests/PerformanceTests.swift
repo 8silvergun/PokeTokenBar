@@ -96,25 +96,37 @@ final class StorePerformanceTests: XCTestCase {
 
 @MainActor
 final class StoreTerminationTests: XCTestCase {
-    func testHugeDeltaGraduatesOnceAndTerminates() async {
-        // 거대한 단일 델타가 무한 루프 없이 라인을 통과해 정확히 1회 졸업하는지 (guardCount 캡 보호).
+    func testHugeDeltaAdvancesOneVisibleTransitionPerApplicationAndTerminates() async {
+        // 거대한 델타라도 한 applyUsage 안에서 진화→졸업까지 건너뛰지 않는다.
+        // 초과분은 usedAtStage에 보존되고, 후속 평가가 한 전이씩 소비해 최종적으로 정확히 1회 졸업한다.
         let s = CompanionStore(provider: StubProvider(value: pline(base: 1, rarity: .common)),
                                clock: { pNow }, fileURL: tmpURL(), rng: SeededRNG(seed: 1))
         await s.hatch(baseID: 1)
-        s.applyUsage(Int(PokemonBalance.graduationTotal(.common)) * 10)   // 졸업 총량의 10배
-        XCTAssertNil(s.state.active)            // 졸업 완료
-        XCTAssertEqual(s.dexEntries.count, 1)   // 정확히 1회
+
+        s.applyUsage(Int(PokemonBalance.graduationTotal(.common)) * 10)
+        XCTAssertEqual(s.state.active?.currentID, 2)
+        XCTAssertTrue(s.state.dex.isEmpty, "active companion view must not be mistaken for a graduated dex record")
+
+        s.applyUsage(0)
+        XCTAssertEqual(s.state.active?.currentID, 3)
+        XCTAssertTrue(s.state.dex.isEmpty, "final active form is still not graduated")
+
+        s.applyUsage(0)
+        XCTAssertNil(s.state.active)
+        XCTAssertEqual(s.dexEntries.count, 1)
         XCTAssertEqual(s.dexEntries[0].chainOrder, [1, 2, 3])
-        XCTAssertEqual(s.state.eggUsage, 0)     // 새 알 인큐베이션 리셋
+        XCTAssertEqual(s.state.eggUsage, 0)
     }
 
     func testRepeatedGraduationGrowsDexLinearly() async {
-        // 무진화 라인을 반복 졸업 — dex 가 선형으로 증가하고 상태가 매번 정합한지.
+        // 3단계 라인을 반복 졸업 — 각 호출은 한 lifecycle 전이만 보여주고 dex 는 선형 증가한다.
         let provider = StubProvider(value: pline(base: 1, rarity: .common))
         let s = CompanionStore(provider: provider, clock: { pNow }, fileURL: tmpURL(), rng: SeededRNG(seed: 9))
         for n in 1...20 {
             await s.hatch(baseID: 1)
             s.applyUsage(Int(PokemonBalance.graduationTotal(.common)) * 10)
+            s.applyUsage(0)
+            s.applyUsage(0)
             XCTAssertEqual(s.dexEntries.count, n)
             XCTAssertNil(s.state.active)
         }

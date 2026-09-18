@@ -35,7 +35,16 @@ enum WindowsTray {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var pendingTip = "PokeTokenBar — loading…"
     nonisolated(unsafe) private static var pendingIcon: HICON?
-    nonisolated(unsafe) private static var currentIcon: HICON?          // static sprite (egg / fallback)
+    nonisolated(unsafe) private static var pendingIconKey: String?
+    nonisolated(unsafe) private static var currentIcon: HICON?          // tray/floating static sprite (representative/current)
+    nonisolated(unsafe) private static var currentIconKey: String?
+    // Home must render the *current companion* subject, not the representative subject used by
+    // tray/floating pet. Keep a separate static icon + subject key so an egg transition cannot
+    // retain the previous Pokémon while the egg sprite is still loading.
+    nonisolated(unsafe) private static var pendingHomeIcon: HICON?
+    nonisolated(unsafe) private static var pendingHomeIconKey: String?
+    nonisolated(unsafe) private static var currentHomeIcon: HICON?
+    nonisolated(unsafe) private static var currentHomeIconKey: String?
     nonisolated(unsafe) private static var animFrames: [HICON] = []     // animated sprite frames (UI thread)
     nonisolated(unsafe) private static var animIndex = 0
     nonisolated(unsafe) private static var animSpeciesKey: String?      // which species' animation is loaded
@@ -261,8 +270,12 @@ enum WindowsTray {
         // 20s spawn timeout. Codex *usage* (tokens) is unaffected — it's parsed from log files.
 
         let icon = await companionIcon(disp)
-        // Animated companion sprite (Gen-V GIF → frame HICONs). Reload only when species/shiny changes.
-        let animKey = disp.visualSpeciesID.map { "\($0)-\(disp.visualIsShiny)" } ?? "egg"
+        // The Home card has a different visual contract from tray/floating pet: it always shows the
+        // current companion (or the newly received egg), even when a representative is pinned.
+        let homeIcon = await homeCompanionIcon(disp)
+        let homeIconKey = disp.homeVisualKey
+        // Animated tray/floating sprite (Gen-V GIF → frame HICONs). Reload only when subject changes.
+        let animKey = disp.trayVisualKey
         if lock.withLock({ animSpeciesKey != animKey && pendingAnimKey != animKey }) {
             var frames: [HICON] = []
             if let id = disp.visualSpeciesID,
@@ -356,7 +369,16 @@ enum WindowsTray {
 
         lock.withLock {
             pendingTip = tip; reportLines = report; currentDisplay = disp; currentUsage = us
-            if icon != nil { pendingIcon = icon }
+            // Like Home, tray/floating must invalidate a previous subject if the replacement image
+            // cannot be loaded. This is a no-op for a pinned representative because trayVisualKey
+            // stays on that representative across lifecycle transitions.
+            pendingIcon = icon
+            pendingIconKey = disp.trayVisualKey
+            // Publish the Home subject even when its image load failed. The key lets applySnapshot
+            // invalidate a stale image from the previous subject without throwing away a same-subject
+            // cached icon on a transient network failure.
+            pendingHomeIcon = homeIcon
+            pendingHomeIconKey = homeIconKey
             if let alert { pendingAlert = alert }
         }
         if let sinkHwnd { _ = PostMessageW(sinkHwnd, updateMessage, 0, 0) }
@@ -415,6 +437,33 @@ enum WindowsTray {
         }
         guard let png else { return nil }
         return WindowsImaging.hicon(fromPNG: png)
+    }
+
+    /// Home card subject is intentionally independent from the representative used by tray/floating pet.
+    private static func homeCompanionIcon(_ disp: CompanionDisplay) async -> HICON? {
+        let png: Data?
+        if let id = disp.speciesID {
+            png = await SpriteStore.shared.data(speciesID: id, animated: false, shiny: disp.isShiny)
+        } else {
+            png = await SpriteStore.shared.eggData()
+        }
+        guard let png else { return nil }
+        return WindowsImaging.hicon(fromPNG: png)
+    }
+
+    /// Never return an icon belonging to a previous Home subject. This matters during the early
+    /// display publish in refresh(): state can already be egg while the egg image fetch is still in flight.
+    private static func homeDisplayedIcon(_ disp: CompanionDisplay) -> HICON? {
+        if currentHomeIconKey == disp.homeVisualKey, let currentHomeIcon {
+            return currentHomeIcon
+        }
+        if disp.isEgg {
+            return lock.withLock { itemIcons["egg"] }
+        }
+        if let id = disp.speciesID {
+            return lock.withLock { evoIcons[id] ?? dexIcons[id] }
+        }
+        return nil
     }
 
     // OpenCode/Hermes usage comes from local SQLite DBs. The reader compiles only where a SQLite
@@ -528,10 +577,45 @@ enum WindowsTray {
 
     private static func applySnapshot() {
         writeWide(&nid.szTip, lock.withLock { pendingTip }, capacity: 128)
-        let newIcon: HICON? = lock.withLock { let i = pendingIcon; pendingIcon = nil; return i }
-        if let newIcon {
-            if let old = currentIcon { DestroyIcon(old) }
-            currentIcon = newIcon
+        let iconUpdate: (HICON?, String?) = lock.withLock {
+            let i = pendingIcon
+            let key = pendingIconKey
+            pendingIcon = nil
+            pendingIconKey = nil
+            return (i, key)
+        }
+        if let key = iconUpdate.1 {
+            if let newIcon = iconUpdate.0 {
+                if let old = currentIcon { DestroyIcon(old) }
+                currentIcon = newIcon
+                currentIconKey = key
+            } else if currentIconKey != key {
+                // Do not keep a stale Pokémon when the lifecycle subject changed to an egg and
+                // the egg fetch failed. A same-subject transient failure keeps the last-good icon.
+                if let old = currentIcon { DestroyIcon(old) }
+                currentIcon = nil
+                currentIconKey = key
+            }
+        }
+        let homeUpdate: (HICON?, String?) = lock.withLock {
+            let i = pendingHomeIcon
+            let key = pendingHomeIconKey
+            pendingHomeIcon = nil
+            pendingHomeIconKey = nil
+            return (i, key)
+        }
+        if let key = homeUpdate.1 {
+            if let newHomeIcon = homeUpdate.0 {
+                if let old = currentHomeIcon { DestroyIcon(old) }
+                currentHomeIcon = newHomeIcon
+                currentHomeIconKey = key
+            } else if currentHomeIconKey != key {
+                // Subject changed but the replacement image is unavailable: clear the stale Pokémon
+                // instead of showing it under "Token Egg". Same-subject failures keep the last-good icon.
+                if let old = currentHomeIcon { DestroyIcon(old) }
+                currentHomeIcon = nil
+                currentHomeIconKey = key
+            }
         }
         // Consume a pending animation (empty array = "no animation, use the static icon").
         if let newAnim = lock.withLock({ let a = pendingAnim; pendingAnim = nil; return a }) {
@@ -567,9 +651,11 @@ enum WindowsTray {
         nid.hIcon = animFrames[animIndex]
         _ = Shell_NotifyIconW(DWORD(NIM_MODIFY), &nid)
         WindowsFloatingPet.updateIcon(animFrames[animIndex])
-        if let popupHwnd, IsWindowVisible(popupHwnd), popupView == 0 {
-            // Match the full-paint offset: the update banner shifts the whole Home view down, so the
-            // incremental sprite redraw must shift too — otherwise it draws over the tabs.
+        let canReuseTrayAnimationForHome = lock.withLock { currentDisplay.canReuseTrayAnimationForHome }
+        if let popupHwnd, IsWindowVisible(popupHwnd), popupView == 0, canReuseTrayAnimationForHome {
+            // The tray animation is reusable only when tray/floating and Home have the exact same
+            // current Pokémon + shiny subject. A pinned representative must never animate over an egg.
+            // Match the full-paint offset: the update banner shifts the whole Home view down.
             let dy: Int32 = bannerVisible() ? bannerHeight : 0
             let hdc = GetDC(popupHwnd)
             fillRound(hdc, RECT(left: 16, top: 50 + dy, right: 116, bottom: 150 + dy), 12, rgb(20, 20, 24))
@@ -848,7 +934,17 @@ enum WindowsTray {
     private static func paintHome(_ hdc: HDC?, _ disp: CompanionDisplay, _ u: UsageSnapshot) {
         // --- Companion card ---
         fillRound(hdc, RECT(left: 16, top: 50, right: 116, bottom: 150), 12, rgb(20, 20, 24))
-        if let icon = displayedIcon() { DrawIconEx(hdc, 22, 56, icon, 88, 88, 0, nil, UINT(DI_NORMAL)) }
+        if let icon = homeDisplayedIcon(disp) {
+            DrawIconEx(hdc, 22, 56, icon, 88, 88, 0, nil, UINT(DI_NORMAL))
+        } else if disp.isEgg {
+            // Offline/first-load fallback. Correct subject is more important than retaining a stale
+            // Pokémon; itemIcons["egg"] replaces this as soon as the cached/downloaded egg arrives.
+            let eggFont = makeFont(-38, bold: false); let eggOld = SelectObject(hdc, eggFont)
+            SetTextColor(hdc, rgb(230, 230, 236))
+            var eggRect = RECT(left: 22, top: 64, right: 110, bottom: 140)
+            drawText("🥚", in: hdc, rect: &eggRect, format: UINT(DT_CENTER | DT_VCENTER | DT_SINGLELINE))
+            SelectObject(hdc, eggOld); DeleteObject(eggFont)
+        }
 
         let nameFont = makeFont(-19, bold: true); var o = SelectObject(hdc, nameFont)
         SetTextColor(hdc, rgb(242, 242, 248))
@@ -2186,6 +2282,18 @@ struct CompanionDisplay: Sendable {
     var bagEntries: [ShopCardEntry] = []
     var spendableLabel = "Spendable tokens"
     var shopHint = ""
+
+    // The Home card represents lifecycle state; tray/floating pet may intentionally represent a
+    // user-pinned Pokédex species. Keeping these identities explicit prevents cross-surface sprite leaks.
+    var homeVisualKey: String {
+        speciesID.map { "\($0)-\(isShiny)" } ?? "egg"
+    }
+    var trayVisualKey: String {
+        visualSpeciesID.map { "\($0)-\(visualIsShiny)" } ?? "egg"
+    }
+    var canReuseTrayAnimationForHome: Bool {
+        speciesID != nil && homeVisualKey == trayVisualKey
+    }
 }
 
 /// One evolution-line node for the Home card thumbnail row. `kind` ∈ done / cur / future.
