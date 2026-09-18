@@ -54,7 +54,7 @@ private struct ShopItemCard: View {
     let kind: ItemKind
     @State private var confirming = false
 
-    private var price: Int { kind.shopPrice ?? 0 }
+    private var price: Int { ShopEntry.item(kind).price }
 
     var body: some View {
         let l = store.l
@@ -138,7 +138,7 @@ private struct EggCard: View {
     @State private var stage: Stage = .idle
     private enum Stage { case idle, confirm, shinyConfirm }
 
-    private var price: Int { FreshEgg.price(guaranteeing: tier) }
+    private var price: Int { ShopEntry.egg(tier).price }
 
     var body: some View {
         let l = store.l
