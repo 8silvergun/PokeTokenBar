@@ -2371,13 +2371,14 @@ extension CompanionStore {
                 let ownedPassive = kind.isPassive && owned > 0
                 let action = kind == .rareCandy ? 3 : (kind == .mint ? 20 : 4)
                 let can = canBuy(kind)
-                let shortfall = max(0, (kind.shopPrice ?? 0) - availableTokens)
+                let effectivePrice = entry.price
+                let shortfall = max(0, effectivePrice - availableTokens)
                 let button = ownedPassive ? loc.ownedAlready
                     : (!can && shortfall > 0 ? loc.windowsNeedMoreTokens(TokenFormatter.compact(shortfall)) : loc.buy)
                 return ShopCardEntry(
                     icon: kind.spriteName, emoji: kind.fallbackEmoji,
                     name: loc.itemName(kind), desc: loc.itemDescription(kind),
-                    priceText: price(kind.shopPrice ?? 0),
+                    priceText: price(effectivePrice),
                     ownedText: (!kind.isPassive && owned > 0) ? loc.ownedCount(owned) : "",
                     button: button, enabled: can, action: action)
             case .egg(let tier):
@@ -2388,12 +2389,13 @@ extension CompanionStore {
                 default: action = 5
                 }
                 let can = canBuyEgg(tier)
-                let shortfall = max(0, FreshEgg.price(guaranteeing: tier) - availableTokens)
+                let effectivePrice = entry.price
+                let shortfall = max(0, effectivePrice - availableTokens)
                 let button = !hasActive ? loc.windowsEggLockedShort
                     : (!can && shortfall > 0 ? loc.windowsNeedMoreTokens(TokenFormatter.compact(shortfall)) : loc.buy)
                 return ShopCardEntry(
                     icon: "egg", emoji: "🥚", name: loc.windowsEggName(tier), desc: loc.windowsEggDescription(tier),
-                    priceText: price(FreshEgg.price(guaranteeing: tier)), ownedText: "",
+                    priceText: price(effectivePrice), ownedText: "",
                     button: button, enabled: can, action: action)
             }
         }
@@ -2418,8 +2420,8 @@ extension CompanionStore {
             canUseCandy: canUseRareCandy, canUseMint: canUseMint,
             canBuyCandy: canBuyRareCandy, canBuyCharm: canBuy(.shinyCharm), canBuyEgg: canBuyFreshEgg,
             ownsCharm: ownsShinyCharm,
-            candyPrice: ItemKind.rareCandy.shopPrice ?? 0, charmPrice: ItemKind.shinyCharm.shopPrice ?? 0,
-            eggPrice: FreshEgg.price, mintPrice: ItemKind.mint.shopPrice ?? 0, canBuyMint: canBuy(.mint),
+            candyPrice: ShopEntry.item(.rareCandy).price, charmPrice: ShopEntry.item(.shinyCharm).price,
+            eggPrice: ShopEntry.egg(nil).price, mintPrice: ShopEntry.item(.mint).price, canBuyMint: canBuy(.mint),
             dex: dexSpecies.map { sp in
                 DexItem(speciesID: sp.id, name: sp.name,
                         rarity: String(describing: sp.rarity), isShiny: sp.isShiny, isRaising: sp.isRaising)
