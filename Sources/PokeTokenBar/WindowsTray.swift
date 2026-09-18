@@ -699,13 +699,20 @@ enum WindowsTray {
                 currentHomeIconKey = key
             }
         }
-        // Consume a pending animation (empty array = "no animation, use the static icon").
-        if let newAnim = lock.withLock({ let a = pendingAnim; pendingAnim = nil; return a }) {
+        // Consume frames and their subject key atomically. Visual loading is detached from the usage
+        // refresh now, so a stale task can otherwise change pendingAnimKey between two separate reads.
+        let animUpdate: ([HICON]?, String?) = lock.withLock {
+            let frames = pendingAnim
+            let key = pendingAnimKey
+            pendingAnim = nil
+            pendingAnimKey = nil
+            return (frames, key)
+        }
+        if let newAnim = animUpdate.0 {
             for old in animFrames { DestroyIcon(old) }
             animFrames = newAnim
             animIndex = 0
-            let appliedKey = lock.withLock { pendingAnimKey }
-            lock.withLock { animSpeciesKey = appliedKey }
+            lock.withLock { animSpeciesKey = animUpdate.1 }
         }
         nid.hIcon = displayedIcon()
         _ = Shell_NotifyIconW(DWORD(NIM_MODIFY), &nid)
