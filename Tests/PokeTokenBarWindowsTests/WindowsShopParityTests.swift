@@ -64,6 +64,22 @@ final class WindowsShopParityTests: XCTestCase {
         return (store, url)
     }
 
+    func testPriceRatioAppliesToWindowsShopDisplayAndPurchase() async throws {
+        let previous = ShopPriceSettings.percent
+        defer { ShopPriceSettings.percent = previous }
+        ShopPriceSettings.percent = 50
+
+        XCTAssertEqual(ShopEntry.item(.mint).price, Mint.price / 2)
+        XCTAssertEqual(ShopEntry.egg(.rare).price, FreshEgg.price(guaranteeing: .rare) / 2)
+
+        let (store, url) = try await makeStore(used: Mint.price / 2)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let bought = await store.buy(.mint)
+        let state = await store.state
+        XCTAssertTrue(bought)
+        XCTAssertEqual(state.spentTokens, Mint.price / 2)
+    }
+
     func testPremiumEggPricesAndOrderingMatchMacOS() async throws {
         XCTAssertEqual(FreshEgg.price(guaranteeing: nil), 1_000_000_000)
         XCTAssertEqual(FreshEgg.price(guaranteeing: .uncommon), 2_500_000_000)

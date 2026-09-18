@@ -726,7 +726,8 @@ final class CompanionStore {
 
     /// 구매 가능 — 잔액이 그 아이템 가격 이상(상점 미판매면 false). 활성/알 무관(재고는 미리 쌓아둘 수 있음).
     func canBuy(_ kind: ItemKind) -> Bool {
-        guard let price = kind.shopPrice else { return false }
+        guard kind.shopPrice != nil else { return false }
+        let price = ShopEntry.item(kind).price
         if kind.isPassive && itemCount(kind) > 0 { return false }   // 보유형은 1회만(재구매 불가)
         return availableTokens >= price
     }
@@ -735,7 +736,9 @@ final class CompanionStore {
     /// 무영향(지출 원장만 증가). 잔액 부족/미판매면 no-op(false).
     @discardableResult
     func buy(_ kind: ItemKind) -> Bool {
-        guard let price = kind.shopPrice, availableTokens >= price else { return false }
+        guard kind.shopPrice != nil else { return false }
+        let price = ShopEntry.item(kind).price
+        guard availableTokens >= price else { return false }
         if kind.isPassive && itemCount(kind) > 0 { return false }   // 보유형 중복 구매 방지(방어)
         state.spentTokens += price
         state.inventory[kind.rawValue, default: 0] += 1
@@ -763,7 +766,7 @@ final class CompanionStore {
         // 새 알 구매는 `hasActive` 에 막혀 되돌릴 수단이 없다. 가격만 계산되면 값이 빠져나가므로
         // 판매 목록을 여기서 강제한다(호출부 하나가 실수하면 토큰이 통째로 사라진다).
         guard FreshEgg.shopTiers.contains(tier) else { return false }
-        return hasActive && availableTokens >= FreshEgg.price(guaranteeing: tier)
+        return hasActive && availableTokens >= ShopEntry.egg(tier).price
     }
 
     /// 알 구매 — 현재 포켓몬을 놓아주고 처음부터 인큐베이션하는 새 알로. 지갑에서 가격 차감.
@@ -777,7 +780,7 @@ final class CompanionStore {
     @discardableResult
     func buyEgg(_ tier: Rarity?) -> Bool {
         guard canBuyEgg(tier) else { return false }
-        state.spentTokens += FreshEgg.price(guaranteeing: tier)
+        state.spentTokens += ShopEntry.egg(tier).price
         if let a = state.active {
             state.dex.append(releasedDexEntry(from: a))   // 놓아줌 기록 — 도감에서 종이 사라지지 않게
         }

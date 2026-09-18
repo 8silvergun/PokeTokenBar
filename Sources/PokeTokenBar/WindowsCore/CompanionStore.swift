@@ -479,14 +479,17 @@ final class CompanionStore {
     }
 
     func canBuy(_ kind: ItemKind) -> Bool {
-        guard let price = kind.shopPrice else { return false }
+        guard kind.shopPrice != nil else { return false }
+        let price = ShopEntry.item(kind).price
         if kind.isPassive && itemCount(kind) > 0 { return false }
         return availableTokens >= price
     }
 
     @discardableResult
     func buy(_ kind: ItemKind) -> Bool {
-        guard let price = kind.shopPrice, availableTokens >= price else { return false }
+        guard kind.shopPrice != nil else { return false }
+        let price = ShopEntry.item(kind).price
+        guard availableTokens >= price else { return false }
         if kind.isPassive && itemCount(kind) > 0 { return false }
         state.spentTokens += price
         state.inventory[kind.rawValue, default: 0] += 1
@@ -502,13 +505,13 @@ final class CompanionStore {
 
     func canBuyEgg(_ tier: Rarity?) -> Bool {
         guard FreshEgg.shopTiers.contains(tier) else { return false }
-        return hasActive && availableTokens >= FreshEgg.price(guaranteeing: tier)
+        return hasActive && availableTokens >= ShopEntry.egg(tier).price
     }
 
     @discardableResult
     func buyEgg(_ tier: Rarity?) -> Bool {
         guard canBuyEgg(tier) else { return false }
-        state.spentTokens += FreshEgg.price(guaranteeing: tier)
+        state.spentTokens += ShopEntry.egg(tier).price
         if let active = state.active {
             // 놓아준 개체도 수집 기록에 남긴다. 졸업은 아니므로 collectedFinals에는 손대지 않는다.
             state.dex.append(releasedDexEntry(from: active))

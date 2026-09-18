@@ -196,11 +196,15 @@ enum ShopEntry: Hashable, Sendable {
     case item(ItemKind)
     case egg(Rarity?)
 
+    /// Effective price after the user's shop ratio. Base balance constants remain unchanged so
+    /// changing the preference affects future purchases only and does not rewrite historical spend.
     var price: Int {
+        let base: Int
         switch self {
-        case .item(let kind): return kind.shopPrice ?? 0
-        case .egg(let tier): return FreshEgg.price(guaranteeing: tier)
+        case .item(let kind): base = kind.shopPrice ?? 0
+        case .egg(let tier): base = FreshEgg.price(guaranteeing: tier)
         }
+        return ShopPriceSettings.adjustedPrice(base)
     }
 }
 

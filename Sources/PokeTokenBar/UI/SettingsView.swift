@@ -23,6 +23,7 @@ struct SettingsView: View {
     @State private var sessionKeyInput = ""
     @State private var isCheckingUpdate = false
     @State private var didCheckUpdate = false
+    @State private var shopPricePercent = ShopPriceSettings.percent
     @State private var selectedScanProviderID = "claude_code"
     /// Provider the draft currently describes. Picker change updates `selectedScanProviderID`
     /// before the TextField blurs; committing against the selection would write Claude paths
@@ -188,6 +189,41 @@ struct SettingsView: View {
                     Text(l.animationSmooth).tag(UsageStore.AnimationQuality.smooth)
                 }
                 .labelsHidden().pickerStyle(.menu).fixedSize()
+            }
+            Divider()
+            groupRow {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(l.shopPriceRatioLabel)
+                    Text(l.shopPriceRatioHint).font(.caption2).foregroundStyle(.tertiary)
+                }
+                Spacer()
+                HStack(spacing: 8) {
+                    Button {
+                        let next = ShopPriceSettings.normalizedPercent(shopPricePercent - 10)
+                        shopPricePercent = next
+                        ShopPriceSettings.percent = next
+                    } label: {
+                        Image(systemName: "minus")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(shopPricePercent <= (ShopPriceSettings.allowedPercents.first ?? 10))
+
+                    Text("\(shopPricePercent)%")
+                        .font(.caption.monospacedDigit())
+                        .frame(width: 44)
+
+                    Button {
+                        let next = ShopPriceSettings.normalizedPercent(shopPricePercent + 10)
+                        shopPricePercent = next
+                        ShopPriceSettings.percent = next
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(shopPricePercent >= (ShopPriceSettings.allowedPercents.last ?? 200))
+                }
             }
             Divider()
             groupRow {

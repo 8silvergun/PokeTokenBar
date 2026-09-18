@@ -1539,7 +1539,7 @@ enum WindowsTray {
         // ===== General =====
         settingsLabel(hdc, y, L("일반", "General", "一般")); y += 24
         let wslOptions = [L("Windows files only", "Windows files only", "Windows files only")] + WSLUsage.installedDistributions
-        let genH = 8 + rowH * 8 + (openDropdown == 1 ? optH * 3 : 0) + (openDropdown == 2 ? optH * 5 : 0) + (openDropdown == 3 ? optH * Int32(wslOptions.count) : 0) + (openDropdown == 4 ? optH * 3 : 0)
+        let genH = 8 + rowH * 9 + (openDropdown == 1 ? optH * 3 : 0) + (openDropdown == 2 ? optH * 5 : 0) + (openDropdown == 3 ? optH * Int32(wslOptions.count) : 0) + (openDropdown == 4 ? optH * 3 : 0)
         drawCard(hdc, y, genH)
         var ry = y + 4
         let langName = disp.languageCode == "ko" ? "한국어" : (disp.languageCode == "ja" ? "日本語" : "English")
@@ -1579,6 +1579,8 @@ enum WindowsTray {
         }
         drawStepRow(hdc, ry, L("진화 속도", "Evolution speed", "進化速度"),
                     value: "\(EvolutionSpeedSettings.multiplier)×", minusAction: 68, plusAction: 69); ry += rowH
+        drawStepRow(hdc, ry, L("상점 가격", "Shop prices", "ショップ価格"),
+                    value: "\(ShopPriceSettings.percent)%", minusAction: 75, plusAction: 76); ry += rowH
         drawSwitchRow(hdc, ry, L("남은 한도로 표시", "Show remaining limits", "残り上限を表示"),
                       sub: nil, on: showsRemainingLimits, action: 58); ry += rowH
         let wslValue = WSLUsage.selectedDistribution ?? wslOptions[0]
@@ -1837,6 +1839,25 @@ enum WindowsTray {
         }
     }
 
+    private static func adjustShopPricePercent(_ delta: Int) {
+        let current = ShopPriceSettings.percent
+        let next = ShopPriceSettings.normalizedPercent(current + delta)
+        guard next != current else { return }
+        ShopPriceSettings.percent = next
+
+        // Price is app configuration, not save state. Rebuild only the display snapshot so the Shop
+        // reflects the new ratio immediately without touching token usage or historical spentTokens.
+        guard let companion else {
+            if let popupHwnd { InvalidateRect(popupHwnd, nil, true) }
+            return
+        }
+        Task {
+            let disp = await companion.windowsDisplay
+            lock.withLock { currentDisplay = disp }
+            if let popupHwnd { InvalidateRect(popupHwnd, nil, true) }
+        }
+    }
+
     private static func toggleFloatingPet() {
         let d = UserDefaults.standard
         let on = d.object(forKey: "floatingPetEnabled") as? Bool ?? false
@@ -2022,6 +2043,8 @@ enum WindowsTray {
             case 68: adjustEvolutionSpeed(-1)
             case 69: adjustEvolutionSpeed(1)
             case 70...74: selectInterval(action - 70)   // interval preset
+            case 75: adjustShopPricePercent(-10)
+            case 76: adjustShopPricePercent(10)
             case 80...199: selectWSL(action - 80)
             case 200...202: selectAnimationQuality(action - 200)
             case 300, 301:
@@ -2462,13 +2485,14 @@ extension CompanionStore {
                 let ownedPassive = kind.isPassive && owned > 0
                 let action = kind == .rareCandy ? 3 : (kind == .mint ? 20 : 4)
                 let can = canBuy(kind)
-                let shortfall = max(0, (kind.shopPrice ?? 0) - availableTokens)
+                let effectivePrice = entry.price
+                let shortfall = max(0, effectivePrice - availableTokens)
                 let button = ownedPassive ? loc.ownedAlready
                     : (!can && shortfall > 0 ? loc.windowsNeedMoreTokens(TokenFormatter.compact(shortfall)) : loc.buy)
                 return ShopCardEntry(
                     icon: kind.spriteName, emoji: kind.fallbackEmoji,
                     name: loc.itemName(kind), desc: loc.itemDescription(kind),
-                    priceText: price(kind.shopPrice ?? 0),
+                    priceText: price(effectivePrice),
                     ownedText: (!kind.isPassive && owned > 0) ? loc.ownedCount(owned) : "",
                     button: button, enabled: can, action: action)
             case .egg(let tier):
@@ -2479,12 +2503,13 @@ extension CompanionStore {
                 default: action = 5
                 }
                 let can = canBuyEgg(tier)
-                let shortfall = max(0, FreshEgg.price(guaranteeing: tier) - availableTokens)
+                let effectivePrice = entry.price
+                let shortfall = max(0, effectivePrice - availableTokens)
                 let button = !hasActive ? loc.windowsEggLockedShort
                     : (!can && shortfall > 0 ? loc.windowsNeedMoreTokens(TokenFormatter.compact(shortfall)) : loc.buy)
                 return ShopCardEntry(
                     icon: "egg", emoji: "🥚", name: loc.windowsEggName(tier), desc: loc.windowsEggDescription(tier),
-                    priceText: price(FreshEgg.price(guaranteeing: tier)), ownedText: "",
+                    priceText: price(effectivePrice), ownedText: "",
                     button: button, enabled: can, action: action)
             }
         }
@@ -2509,8 +2534,8 @@ extension CompanionStore {
             canUseCandy: canUseRareCandy, canUseMint: canUseMint,
             canBuyCandy: canBuyRareCandy, canBuyCharm: canBuy(.shinyCharm), canBuyEgg: canBuyFreshEgg,
             ownsCharm: ownsShinyCharm,
-            candyPrice: ItemKind.rareCandy.shopPrice ?? 0, charmPrice: ItemKind.shinyCharm.shopPrice ?? 0,
-            eggPrice: FreshEgg.price, mintPrice: ItemKind.mint.shopPrice ?? 0, canBuyMint: canBuy(.mint),
+            candyPrice: ShopEntry.item(.rareCandy).price, charmPrice: ShopEntry.item(.shinyCharm).price,
+            eggPrice: ShopEntry.egg(nil).price, mintPrice: ShopEntry.item(.mint).price, canBuyMint: canBuy(.mint),
             dex: dexSpecies.map { sp in
                 DexItem(speciesID: sp.id, name: sp.name,
                         rarity: String(describing: sp.rarity), isShiny: sp.isShiny, isRaising: sp.isRaising)
